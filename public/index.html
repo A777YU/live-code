@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>跳转中...</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #f5f7fa;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: -apple-system, "PingFang SC", Arial, sans-serif;
+    }
+    .container {
+      text-align: center;
+      padding: 30px;
+      background: #fff;
+      border-radius: 20px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.05);
+    }
+    .spinner {
+      width: 50px;
+      height: 50px;
+      border: 4px solid #e2e4e8;
+      border-top-color: #1a3a6a;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .title { font-size: 18px; color: #1a3a6a; margin-bottom: 6px; }
+    .sub { font-size: 14px; color: #6b7a8f; }
+    .error { color: #e74c3c; font-size: 14px; margin-top: 15px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner"></div>
+    <div class="title">正在安全验证</div>
+    <div class="sub" id="status">请稍候…</div>
+    <div class="error" id="errorMsg"></div>
+  </div>
+
+  <script>
+    (function() {
+      const statusEl = document.getElementById('status');
+      const errorEl = document.getElementById('errorMsg');
+      const startTime = Date.now();
+
+      fetch('/api/config?t=' + startTime, { cache: 'no-store' })
+        .then(res => {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        })
+        .then(data => {
+          const { url, fallbackUrl, blocked } = data;
+          if (blocked) {
+            statusEl.textContent = '⛔ 您被限制访问，将跳转备用页面';
+            setTimeout(() => { window.location.href = fallbackUrl; }, 800);
+          } else {
+            statusEl.textContent = '✅ 验证通过，正在跳转…';
+            setTimeout(() => { window.location.href = url; }, 800);
+          }
+        })
+        .catch(err => {
+          errorEl.textContent = '⚠️ 网络异常，将自动进入备用链接';
+          setTimeout(() => {
+            window.location.href = 'https://example.com/fallback';
+          }, 1500);
+        });
+    })();
+  </script>
+</body>
+</html>
