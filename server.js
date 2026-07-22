@@ -124,7 +124,7 @@ function signHuaweiRequest(method, url, body, appKey, appSecret) {
 
     // ★★★ 签名头必须包含 host, user-agent, x-sdk-date, x-stage ★★★
     const signedHeaders = 'host;user-agent;x-sdk-date;x-stage';
-    const userAgent = 'axios/1.6.0';
+    const userAgent = 'APIGatewayDebugClient/1.0';
     const xStage = 'RELEASE';
     const canonicalHeaders = `host:${host}\nuser-agent:${userAgent}\nx-sdk-date:${xSdkDate}\nx-stage:${xStage}\n`;
     const canonicalRequest = `${method}\n${pathname}\n${query}\n${canonicalHeaders}\n${signedHeaders}\n${bodyHash}`;
