@@ -91,7 +91,7 @@ function isMatched(list, target) {
     });
 }
 
-// ===== IP地理位置（双服务对比） =====
+// ===== IP地理位置（三服务并发） =====
 const geoCache = {};
 const CACHE_TTL = 24 * 60 * 60 * 1000;
 const IPDATACLOUD_KEY = process.env.IPDATACLOUD_KEY || '75420c4e849e11f1a82800163e167ffb';
@@ -124,14 +124,14 @@ async function getAliyunGeo(ip) {
                 city: data.city || '未知'
             };
             console.log('[阿里云] 查询成功:', result);
-            return result;
+            return { success: true, data: result };
         } else {
             console.error('[阿里云] 无法解析响应结构:', response.data);
-            return null;
+            return { success: false, error: '解析失败' };
         }
     } catch (e) {
         console.error('[阿里云] 请求失败:', e.message);
-        return null;
+        return { success: false, error: e.message };
     }
 }
 
@@ -154,14 +154,41 @@ async function getIp666Geo(ip) {
                 city: locationData.city || ''
             };
             console.log('[IP666] 查询成功:', result);
-            return result;
+            return { success: true, data: result };
         } else {
             console.log(`[IP666] 查询失败，响应码: ${response.data?.code}`);
-            return null;
+            return { success: false, error: `响应码 ${response.data?.code}` };
         }
     } catch (e) {
         console.error('[IP666] 请求失败:', e.message);
-        return null;
+        return { success: false, error: e.message };
+    }
+}
+
+// ----- 备用服务（ip-api.com） -----
+async function getBackupGeo(ip) {
+    console.log(`[备用服务] 开始查询 IP: ${ip}`);
+    try {
+        const url = `http://ip-api.com/json/${ip}?fields=country,regionName,city&lang=zh-CN`;
+        const response = await axios.get(url, {
+            timeout: 5000
+        });
+        console.log('[备用服务] 原始响应:', JSON.stringify(response.data));
+        if (response.data && response.data.status !== 'fail') {
+            const result = {
+                country: response.data.country || '未知',
+                region: response.data.regionName || '未知',
+                city: response.data.city || '未知'
+            };
+            console.log('[备用服务] 查询成功:', result);
+            return { success: true, data: result };
+        } else {
+            console.log('[备用服务] 查询失败，响应状态:', response.data?.status);
+            return { success: false, error: '查询失败' };
+        }
+    } catch (e) {
+        console.error('[备用服务] 请求失败:', e.message);
+        return { success: false, error: e.message };
     }
 }
 
@@ -172,46 +199,105 @@ async function getGeoInfo(ip) {
         return geoCache[ipv4].data;
     }
     console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息`);
-    const [ip666, aliyun] = await Promise.all([
+
+    // 并发请求三个服务
+    const [ip666Result, aliyunResult, backupResult] = await Promise.all([
         getIp666Geo(ipv4),
-        getAliyunGeo(ipv4)
+        getAliyunGeo(ipv4),
+        getBackupGeo(ipv4)
     ]);
+
+    // 收集成功的数据
+    const services = {
+        ip666: ip666Result.success ? ip666Result.data : null,
+        aliyun: aliyunResult.success ? aliyunResult.data : null,
+        backup: backupResult.success ? backupResult.data : null
+    };
+    const successCount = Object.values(services).filter(v => v !== null).length;
+
+    console.log(`[Geo] 成功服务数: ${successCount}, 服务状态:`, {
+        ip666: ip666Result.success ? '成功' : `失败(${ip666Result.error})`,
+        aliyun: aliyunResult.success ? '成功' : `失败(${aliyunResult.error})`,
+        backup: backupResult.success ? '成功' : `失败(${backupResult.error})`
+    });
+
     let result = {
         country: '未知',
         region: '未知',
         city: '未知',
         match: false,
-        ip666: ip666 || { region: '服务不可用', city: '服务不可用' },
-        aliyun: aliyun || { region: '服务不可用', city: '服务不可用' }
+        services: {
+            ip666: { success: ip666Result.success, data: services.ip666, error: ip666Result.error || null },
+            aliyun: { success: aliyunResult.success, data: services.aliyun, error: aliyunResult.error || null },
+            backup: { success: backupResult.success, data: services.backup, error: backupResult.error || null }
+        }
     };
-    if (ip666 && aliyun) {
-        const region666 = normalizeRegion(ip666.region);
-        const regionAli = normalizeRegion(aliyun.region);
-        result.match = (region666 === regionAli);
-        result.country = ip666.country || '未知';
-        result.region = ip666.region || '未知';
-        result.city = ip666.city || ip666.region || '未知';
-        result.ip666 = { region: ip666.region, city: ip666.city || ip666.region };
-        result.aliyun = { region: aliyun.region, city: aliyun.city || aliyun.region };
-    } else if (ip666) {
-        result.country = ip666.country || '未知';
-        result.region = ip666.region || '未知';
-        result.city = ip666.city || ip666.region || '未知';
-        result.match = false;
-        result.ip666 = { region: ip666.region, city: result.city };
-        result.aliyun = { region: '服务不可用', city: '服务不可用' };
-    } else if (aliyun) {
-        result.country = aliyun.country || '未知';
-        result.region = aliyun.region || '未知';
-        result.city = aliyun.city || aliyun.region || '未知';
-        result.match = false;
-        result.ip666 = { region: '服务不可用', city: '服务不可用' };
-        result.aliyun = { region: aliyun.region, city: result.city };
+
+    // 至少需要2个服务成功才能进行对比
+    if (successCount >= 2) {
+        // 优先使用 IP666 和阿里云
+        let primary = services.ip666;
+        let secondary = services.aliyun;
+        let usedBackup = false;
+
+        // 如果 IP666 失败，用备用替代
+        if (!primary && services.backup) {
+            primary = services.backup;
+            usedBackup = true;
+        }
+        // 如果阿里云失败，用备用替代（但要注意不要和上面重复，如果 IP666 失败且备用已用，则 secondary 只能是备用？但此时只有一个备用，不能同时给两个用）
+        // 更合理的逻辑：选择两个最佳数据，优先 IP666 和阿里云，若某一个缺失则用备用补位，但不能重复使用同一个备用。
+        // 因此，我们应先判断哪些可用，然后组合。
+        let available = [];
+        if (services.ip666) available.push({ source: 'ip666', data: services.ip666 });
+        if (services.aliyun) available.push({ source: 'aliyun', data: services.aliyun });
+        if (services.backup) available.push({ source: 'backup', data: services.backup });
+
+        // 取前两个（按顺序：ip666, aliyun, backup）
+        let first = available[0];
+        let second = available[1];
+        if (first && second) {
+            // 对比 first 和 second
+            const region1 = normalizeRegion(first.data.region);
+            const region2 = normalizeRegion(second.data.region);
+            result.match = (region1 === region2);
+            // 使用 first 的数据作为主显示（优先 IP666）
+            result.country = first.data.country || '未知';
+            result.region = first.data.region || '未知';
+            result.city = first.data.city || '未知';
+            // 记录使用的服务
+            result.usedPrimary = first.source;
+            result.usedSecondary = second.source;
+            // 记录备用是否被使用（即 primary 或 secondary 中是否有 backup）
+            result.usedBackup = (first.source === 'backup' || second.source === 'backup');
+        } else {
+            // 少于2个有效，虽然 successCount>=2 但理论上不会进入这里，但保留
+            result.match = false;
+        }
     } else {
+        // 少于2个成功，无法对比，直接屏蔽
         result.match = false;
-        result.ip666 = { region: '服务不可用', city: '服务不可用' };
-        result.aliyun = { region: '服务不可用', city: '服务不可用' };
+        // 如果有任何一个成功，则显示该数据，否则全部未知
+        if (services.ip666) {
+            result.country = services.ip666.country;
+            result.region = services.ip666.region;
+            result.city = services.ip666.city;
+        } else if (services.aliyun) {
+            result.country = services.aliyun.country;
+            result.region = services.aliyun.region;
+            result.city = services.aliyun.city;
+        } else if (services.backup) {
+            result.country = services.backup.country;
+            result.region = services.backup.region;
+            result.city = services.backup.city;
+        }
     }
+
+    // 为了兼容老字段，保留 ip666 和 aliyun 字段（但可能为 null）
+    result.ip666 = services.ip666 || { region: '服务不可用', city: '服务不可用' };
+    result.aliyun = services.aliyun || { region: '服务不可用', city: '服务不可用' };
+    result.backup = services.backup || null;
+
     console.log('[Geo] 最终结果:', result);
     geoCache[ipv4] = { data: result, timestamp: Date.now() };
     return result;
@@ -269,8 +355,21 @@ async function logIP(ip, action, req) {
             device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
         }
 
-        // ★ 使用统一的判断函数
         const finalBlocked = isBlocked(ipv4, geo, blockedList, whitelist);
+
+        // 构建对比信息，包含服务状态
+        const compareInfo = {
+            match: geo.match,
+            ip666: geo.ip666,
+            aliyun: geo.aliyun,
+            backup: geo.backup || null,
+            usedBackup: geo.usedBackup || false,
+            services: geo.services || {
+                ip666: { success: false, data: null, error: '未知' },
+                aliyun: { success: false, data: null, error: '未知' },
+                backup: { success: false, data: null, error: '未知' }
+            }
+        };
 
         const entry = {
             ip: ipv4,
@@ -281,11 +380,7 @@ async function logIP(ip, action, req) {
             city: geo.city,
             device: device,
             blocked: finalBlocked,
-            compare: {
-                match: geo.match,
-                ip666: geo.ip666,
-                aliyun: geo.aliyun
-            }
+            compare: compareInfo
         };
         logs.push(entry);
         saveLogs(logs);
@@ -348,7 +443,6 @@ app.get('/api/config', async (req, res) => {
     const blockedList = getBlocked();
     const whitelist = getWhitelist();
 
-    // ★ 使用统一的判断函数
     const isBlockedResult = isBlocked(ipv4, geo, blockedList, whitelist);
 
     res.json({
@@ -492,7 +586,6 @@ app.post('/api/clear-cache', requireLogin, (req, res) => {
 // ===== 访客统计（被屏蔽/未屏蔽） =====
 app.get('/api/visitors/:type', requireLogin, (req, res) => {
     const type = req.params.type;
-    // 只统计 visit 动作
     const logs = getLogs().filter(l => l.action === 'visit');
     const map = {};
 
@@ -504,7 +597,7 @@ app.get('/api/visitors/:type', requireLogin, (req, res) => {
                 country: entry.country,
                 region: entry.region,
                 city: entry.city,
-                compare: entry.compare || { match: false, ip666: {}, aliyun: {} },
+                compare: entry.compare || { match: false, ip666: {}, aliyun: {}, backup: null, usedBackup: false, services: {} },
                 device: entry.device || '未知',
                 firstTime: entry.time,
                 lastTime: entry.time,
@@ -551,7 +644,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（包含清空缓存按钮）
+// 管理后台页面（显示服务状态）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -602,6 +695,10 @@ app.get('/admin', (req, res) => {
         .status { margin-left: 10px; font-size: 13px; }
         .status.error { color: #e74c3c; }
         .cache-btn { margin-top: 10px; }
+        .service-tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-right: 4px; }
+        .service-success { background: #d4edda; color: #155724; }
+        .service-fail { background: #f8d7da; color: #721c24; }
+        .backup-tag { background: #ffc107; color: #000; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 4px; }
     </style>
 </head>
 <body>
@@ -661,7 +758,7 @@ app.get('/admin', (req, res) => {
                 <thead>
                     <tr>
                         <th>IP</th>
-                        <th>定位对比</th>
+                        <th>定位对比 & 服务状态</th>
                         <th>省份</th>
                         <th>设备</th>
                         <th>进入次数</th>
@@ -681,7 +778,7 @@ app.get('/admin', (req, res) => {
                 <thead>
                     <tr>
                         <th>IP</th>
-                        <th>定位对比</th>
+                        <th>定位对比 & 服务状态</th>
                         <th>省份</th>
                         <th>设备</th>
                         <th>进入次数</th>
@@ -791,11 +888,23 @@ app.get('/admin', (req, res) => {
                     const compare = item.compare || {};
                     const matchText = compare.match ? '✅ 一致' : '❌ 不一致';
                     const badgeClass = compare.match ? 'compare-match' : 'compare-fail';
-                    const ip666 = compare.ip666 || { region: '未知', city: '未知' };
-                    const aliyun = compare.aliyun || { region: '未知', city: '未知' };
-                    const compareDisplay = \`
+                    const services = compare.services || {};
+                    const ip666Status = services.ip666 ? (services.ip666.success ? '✅' : '❌') : '❌';
+                    const aliyunStatus = services.aliyun ? (services.aliyun.success ? '✅' : '❌') : '❌';
+                    const backupStatus = services.backup ? (services.backup.success ? '✅' : '❌') : '❌';
+                    const ip666Data = services.ip666 && services.ip666.data ? \`\${services.ip666.data.city}(\${services.ip666.data.region})\` : '不可用';
+                    const aliyunData = services.aliyun && services.aliyun.data ? \`\${services.aliyun.data.city}(\${services.aliyun.data.region})\` : '不可用';
+                    const backupData = services.backup && services.backup.data ? \`\${services.backup.data.city}(\${services.backup.data.region})\` : '不可用';
+                    const usedBackup = compare.usedBackup || false;
+
+                    let compareDisplay = \`
                         <span class="compare-badge \${badgeClass}">\${matchText}</span><br>
-                        <span style="font-size:11px;color:#666;">IP666: \${ip666.city}(\${ip666.region})<br>阿里云: \${aliyun.city}(\${aliyun.region})</span>
+                        <span style="font-size:11px;color:#666;">
+                            <span class="service-tag \${services.ip666 && services.ip666.success ? 'service-success' : 'service-fail'}">IP666: \${ip666Status} \${ip666Data}</span><br>
+                            <span class="service-tag \${services.aliyun && services.aliyun.success ? 'service-success' : 'service-fail'}">阿里云: \${aliyunStatus} \${aliyunData}</span><br>
+                            <span class="service-tag \${services.backup && services.backup.success ? 'service-success' : 'service-fail'}">备用: \${backupStatus} \${backupData}</span>
+                            \${usedBackup ? '<span class="backup-tag">🔄 使用了备用</span>' : ''}
+                        </span>
                     \`;
                     return \`
                         <tr>
