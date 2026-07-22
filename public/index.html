@@ -22,7 +22,6 @@
           window.location.href = blocked ? fallbackUrl : url;
         })
         .catch(() => {
-          // 网络异常备用跳转
           window.location.href = 'https://example.com/fallback';
         });
     })();

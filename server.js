@@ -89,12 +89,14 @@ const ALIYUN_APPCODE = process.env.ALIYUN_APPCODE || 'e5f69ac13b5a492b86693d5e6c
 
 // ---------- 阿里云（超时 2000ms） ----------
 async function getAliyunGeo(ip) {
+  console.log(`[阿里云] 开始查询 IP: ${ip}`);
   try {
     const response = await axios.get('https://jisuip.market.alicloudapi.com/ip/location', {
       params: { ip },
       headers: { 'Authorization': 'APPCODE ' + ALIYUN_APPCODE },
       timeout: 2000
     });
+    console.log(`[阿里云] 原始响应:`, JSON.stringify(response.data));
     let data = null;
     if (response.data) {
       if (response.data.status === 0 && response.data.result) data = response.data.result;
@@ -102,36 +104,48 @@ async function getAliyunGeo(ip) {
       else if (response.data.country) data = response.data;
     }
     if (data) {
-      return {
+      const result = {
         country: data.country || '未知',
         region: data.province || data.region || '未知',
         city: data.city || '未知'
       };
+      console.log(`[阿里云] 查询成功:`, result);
+      return result;
+    } else {
+      console.log(`[阿里云] 无法解析响应结构:`, response.data);
+      return null;
     }
-    return null;
   } catch (e) {
+    console.error(`[阿里云] 请求失败:`, e.message);
     return null;
   }
 }
 
 // ---------- IP666（超时 3000ms） ----------
 async function getIp666Geo(ip) {
+  console.log(`[IP666] 开始查询 IP: ${ip}`);
   try {
     const response = await axios.get('https://api.ipdatacloud.com/v2/query', {
       params: { ip, key: IPDATACLOUD_KEY },
       timeout: 3000
     });
+    console.log(`[IP666] 原始响应:`, JSON.stringify(response.data));
     const data = response.data?.data;
     if (data && (response.data.code == 200 || response.data.code == 0)) {
       let locationData = data.location || data;
-      return {
+      const result = {
         country: locationData.country || '未知',
         region: locationData.province || locationData.region || '未知',
         city: locationData.city || ''
       };
+      console.log(`[IP666] 查询成功:`, result);
+      return result;
+    } else {
+      console.log(`[IP666] 查询失败，响应码: ${response.data?.code}`);
+      return null;
     }
-    return null;
   } catch (e) {
+    console.error(`[IP666] 请求失败:`, e.message);
     return null;
   }
 }
@@ -139,9 +153,11 @@ async function getIp666Geo(ip) {
 async function getGeoInfo(ip) {
   const ipv4 = getIPv4(ip);
   if (geoCache[ipv4] && (Date.now() - geoCache[ipv4].timestamp < CACHE_TTL)) {
+    console.log(`[GeoCache] 命中缓存 IP: ${ipv4}`);
     return geoCache[ipv4].data;
   }
 
+  console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息`);
   const [ip666, aliyun] = await Promise.all([
     getIp666Geo(ipv4),
     getAliyunGeo(ipv4)
@@ -182,58 +198,65 @@ async function getGeoInfo(ip) {
     result.aliyun = { region: '服务不可用', city: '服务不可用' };
   }
 
+  console.log(`[Geo] 最终结果:`, result);
   geoCache[ipv4] = { data: result, timestamp: Date.now() };
   return result;
 }
 
-// ===== 记录日志 =====
+// ===== 记录日志（增强异常捕获） =====
 async function logIP(ip, action, req, duration = null) {
-  if (req && req.path && req.path.startsWith('/admin')) return;
-  const logs = getLogs();
-  const now = new Date().toISOString();
-  const ipv4 = getIPv4(ip);
-  const geo = await getGeoInfo(ipv4);
-  const agent = useragent.parse(req.headers['user-agent'] || '');
-  const device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
+  try {
+    if (req && req.path && req.path.startsWith('/admin')) return;
+    const logs = getLogs();
+    const now = new Date().toISOString();
+    const ipv4 = getIPv4(ip);
+    const geo = await getGeoInfo(ipv4);
+    const agent = useragent.parse(req.headers['user-agent'] || '');
+    const device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
 
-  const blockedList = getBlocked();
-  const whitelist = getWhitelist();
-  let isBlocked = false;
-  if (whitelist.ips.includes(ipv4)) {
-    isBlocked = false;
-  } else {
-    const wlCityMatch = isMatched(whitelist.cities, geo.city);
-    const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
-    if (wlCityMatch || wlProvinceMatch) {
+    const blockedList = getBlocked();
+    const whitelist = getWhitelist();
+    let isBlocked = false;
+    if (whitelist.ips.includes(ipv4)) {
       isBlocked = false;
     } else {
-      const cityMatch = isMatched(blockedList.cities, geo.city);
-      const provinceMatch = isMatched(blockedList.provinces, geo.region);
-      if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch || (geo.city === '未知' && geo.region === '未知')) {
-        isBlocked = true;
+      const wlCityMatch = isMatched(whitelist.cities, geo.city);
+      const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
+      if (wlCityMatch || wlProvinceMatch) {
+        isBlocked = false;
       } else {
-        isBlocked = !geo.match;
+        const cityMatch = isMatched(blockedList.cities, geo.city);
+        const provinceMatch = isMatched(blockedList.provinces, geo.region);
+        if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch || (geo.city === '未知' && geo.region === '未知')) {
+          isBlocked = true;
+        } else {
+          isBlocked = !geo.match;
+        }
       }
     }
-  }
 
-  logs.push({
-    ip: ipv4,
-    action: action,
-    time: now,
-    country: geo.country,
-    region: geo.region,
-    city: geo.city,
-    device: device,
-    duration: duration,
-    blocked: isBlocked,
-    compare: {
-      match: geo.match,
-      ip666: geo.ip666,
-      aliyun: geo.aliyun
-    }
-  });
-  saveLogs(logs);
+    logs.push({
+      ip: ipv4,
+      action: action,
+      time: now,
+      country: geo.country,
+      region: geo.region,
+      city: geo.city,
+      device: device,
+      duration: duration,
+      blocked: isBlocked,
+      compare: {
+        match: geo.match,
+        ip666: geo.ip666,
+        aliyun: geo.aliyun
+      }
+    });
+    saveLogs(logs);
+    console.log(`[logIP] 成功记录 IP ${ipv4}, action: ${action}, blocked: ${isBlocked}`);
+  } catch (err) {
+    console.error(`[logIP] 记录日志时出错:`, err);
+    // 即使出错也要保证服务不崩溃
+  }
 }
 
 function getClientIP(req) {
@@ -280,12 +303,17 @@ app.get('/api/config', async (req, res) => {
   const duration = enterTime ? (Date.now() - enterTime) : null;
 
   if (duration !== null && duration > 0) {
-    const logs = getLogs();
-    const lastVisits = logs.filter(l => l.ip === ipv4 && l.action === 'visit');
-    if (lastVisits.length > 0) {
-      const last = lastVisits[lastVisits.length - 1];
-      last.duration = duration;
-      saveLogs(logs);
+    try {
+      const logs = getLogs();
+      const lastVisits = logs.filter(l => l.ip === ipv4 && l.action === 'visit');
+      if (lastVisits.length > 0) {
+        const last = lastVisits[lastVisits.length - 1];
+        last.duration = duration;
+        saveLogs(logs);
+        console.log(`[api/config] 更新停留时长 ${duration}ms for IP ${ipv4}`);
+      }
+    } catch (err) {
+      console.error(`[api/config] 更新时长失败:`, err);
     }
   }
 
@@ -518,7 +546,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（完整版，已包含所有功能）
+// 管理后台页面（完整版）
 // ============================================
 app.get('/admin', (req, res) => {
   if (req.session.loggedIn) {
