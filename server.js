@@ -135,7 +135,7 @@ async function getAliyunGeo(ip) {
     }
 }
 
-// ----- IP666（超时3秒，详细日志） -----
+// ----- IP666（超时 3000ms，详细错误日志） -----
 async function getIp666Geo(ip) {
     console.log(`[IP666] 开始查询 IP: ${ip}`);
     try {
@@ -489,7 +489,7 @@ app.delete('/api/whitelist/:type/:value', requireLogin, (req, res) => {
     res.json({ success: true });
 });
 
-// ===== 清空缓存 API（新增） =====
+// ===== 清空缓存 API =====
 app.post('/api/clear-cache', requireLogin, (req, res) => {
     const keys = Object.keys(geoCache);
     keys.forEach(key => delete geoCache[key]);
@@ -498,9 +498,9 @@ app.post('/api/clear-cache', requireLogin, (req, res) => {
 });
 
 // ===== 访客统计（被屏蔽/未屏蔽） =====
-// ★ 修改：只统计 visit 动作，不包含 click
 app.get('/api/visitors/:type', requireLogin, (req, res) => {
     const type = req.params.type;
+    // ★★★ 只统计 visit 动作，不再统计 click ★★★
     const logs = getLogs().filter(l => l.action === 'visit');
     const map = {};
 
@@ -534,9 +534,9 @@ app.get('/api/visitors/:type', requireLogin, (req, res) => {
     res.json(result);
 });
 
-// ===== 今日统计（不变，仍统计所有动作，但只用于总览） =====
+// ===== 今日统计 =====
 app.get('/api/stats', requireLogin, (req, res) => {
-    const logs = getLogs().filter(l => l.action === 'visit' || l.action === 'click');
+    const logs = getLogs().filter(l => l.action === 'visit'); // 只统计 visit
     const today = new Date().toISOString().slice(0, 10);
     const todayLogs = logs.filter(l => l.time.startsWith(today));
     const ipMap = {};
@@ -559,7 +559,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（含清空缓存按钮）
+// 管理后台页面（带清空缓存按钮）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -609,7 +609,7 @@ app.get('/admin', (req, res) => {
         }
         .status { margin-left: 10px; font-size: 13px; }
         .status.error { color: #e74c3c; }
-        .clear-cache-btn { margin-top: 10px; }
+        .cache-btn { margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -626,7 +626,8 @@ app.get('/admin', (req, res) => {
             <div class="stat-item"><div class="number" id="blockedVisits">0</div><div class="label">已屏蔽</div></div>
             <div class="stat-item"><div class="number" id="unblockedVisits">0</div><div class="label">未屏蔽</div></div>
         </div>
-        <div class="clear-cache-btn">
+        <!-- 清空缓存按钮 -->
+        <div class="cache-btn">
             <button class="btn" onclick="clearCache()">🗑️ 清空 IP 缓存</button>
             <span id="clearStatus" style="margin-left:10px;font-size:13px;"></span>
         </div>
@@ -784,27 +785,6 @@ app.get('/admin', (req, res) => {
         .then(r=>r.json()).then(d=>{ if(d.success) loadWhitelist(); });
     }
 
-    // 清空缓存函数
-    function clearCache() {
-        if(!confirm('确定清空 IP 定位缓存吗？\n（缓存用于加速重复 IP 的查询，清空后下次访问将重新获取定位数据）')) return;
-        fetch('/api/clear-cache', { method:'POST' })
-            .then(r=>r.json())
-            .then(d=>{
-                const status = document.getElementById('clearStatus');
-                if(d.success){
-                    status.textContent = '✅ 已清空 ' + d.cleared + ' 条缓存';
-                    status.style.color = '#155724';
-                } else {
-                    status.textContent = '❌ 清空失败';
-                    status.style.color = '#721c24';
-                }
-            })
-            .catch(()=>{
-                document.getElementById('clearStatus').textContent = '❌ 请求失败';
-                document.getElementById('clearStatus').style.color = '#721c24';
-            });
-    }
-
     function loadVisitors(type) {
         const endpoint = type === 'blocked' ? '/api/visitors/blocked' : '/api/visitors/unblocked';
         const tbodyId = type === 'blocked' ? 'blockedVisitorBody' : 'unblockedVisitorBody';
@@ -841,6 +821,27 @@ app.get('/admin', (req, res) => {
             })
             .catch(() => {
                 document.getElementById(tbodyId).innerHTML = '<tr><td colspan="7">加载失败</td></tr>';
+            });
+    }
+
+    // ★★★ 清空缓存函数 ★★★
+    function clearCache() {
+        if(!confirm('确定清空 IP 定位缓存吗？')) return;
+        fetch('/api/clear-cache', { method:'POST' })
+            .then(r=>r.json())
+            .then(d=>{
+                const status = document.getElementById('clearStatus');
+                if(d.success){
+                    status.textContent = '✅ 已清空 ' + d.cleared + ' 条缓存';
+                    status.style.color = '#155724';
+                } else {
+                    status.textContent = '❌ 清空失败';
+                    status.style.color = '#721c24';
+                }
+            })
+            .catch(()=>{
+                document.getElementById('clearStatus').textContent = '❌ 请求失败';
+                document.getElementById('clearStatus').style.color = '#721c24';
             });
     }
 
