@@ -200,14 +200,12 @@ async function getGeoInfo(ip) {
     }
     console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息`);
 
-    // 并发请求三个服务
     const [ip666Result, aliyunResult, backupResult] = await Promise.all([
         getIp666Geo(ipv4),
         getAliyunGeo(ipv4),
         getBackupGeo(ipv4)
     ]);
 
-    // 收集成功的数据
     const services = {
         ip666: ip666Result.success ? ip666Result.data : null,
         aliyun: aliyunResult.success ? aliyunResult.data : null,
@@ -233,51 +231,29 @@ async function getGeoInfo(ip) {
         }
     };
 
-    // 至少需要2个服务成功才能进行对比
     if (successCount >= 2) {
-        // 优先使用 IP666 和阿里云
-        let primary = services.ip666;
-        let secondary = services.aliyun;
-        let usedBackup = false;
-
-        // 如果 IP666 失败，用备用替代
-        if (!primary && services.backup) {
-            primary = services.backup;
-            usedBackup = true;
-        }
-        // 如果阿里云失败，用备用替代（但要注意不要和上面重复，如果 IP666 失败且备用已用，则 secondary 只能是备用？但此时只有一个备用，不能同时给两个用）
-        // 更合理的逻辑：选择两个最佳数据，优先 IP666 和阿里云，若某一个缺失则用备用补位，但不能重复使用同一个备用。
-        // 因此，我们应先判断哪些可用，然后组合。
         let available = [];
         if (services.ip666) available.push({ source: 'ip666', data: services.ip666 });
         if (services.aliyun) available.push({ source: 'aliyun', data: services.aliyun });
         if (services.backup) available.push({ source: 'backup', data: services.backup });
 
-        // 取前两个（按顺序：ip666, aliyun, backup）
         let first = available[0];
         let second = available[1];
         if (first && second) {
-            // 对比 first 和 second
             const region1 = normalizeRegion(first.data.region);
             const region2 = normalizeRegion(second.data.region);
             result.match = (region1 === region2);
-            // 使用 first 的数据作为主显示（优先 IP666）
             result.country = first.data.country || '未知';
             result.region = first.data.region || '未知';
             result.city = first.data.city || '未知';
-            // 记录使用的服务
             result.usedPrimary = first.source;
             result.usedSecondary = second.source;
-            // 记录备用是否被使用（即 primary 或 secondary 中是否有 backup）
             result.usedBackup = (first.source === 'backup' || second.source === 'backup');
         } else {
-            // 少于2个有效，虽然 successCount>=2 但理论上不会进入这里，但保留
             result.match = false;
         }
     } else {
-        // 少于2个成功，无法对比，直接屏蔽
         result.match = false;
-        // 如果有任何一个成功，则显示该数据，否则全部未知
         if (services.ip666) {
             result.country = services.ip666.country;
             result.region = services.ip666.region;
@@ -293,7 +269,6 @@ async function getGeoInfo(ip) {
         }
     }
 
-    // 为了兼容老字段，保留 ip666 和 aliyun 字段（但可能为 null）
     result.ip666 = services.ip666 || { region: '服务不可用', city: '服务不可用' };
     result.aliyun = services.aliyun || { region: '服务不可用', city: '服务不可用' };
     result.backup = services.backup || null;
@@ -303,34 +278,18 @@ async function getGeoInfo(ip) {
     return result;
 }
 
-// ===== ★ 统一屏蔽判断函数（严格参照参考代码） =====
+// ===== ★ 统一屏蔽判断函数 =====
 function isBlocked(ip, geo, blockedList, whitelist) {
     const ipv4 = getIPv4(ip);
-    // 1. 白名单IP优先
-    if (whitelist.ips.includes(ipv4)) {
-        return false;
-    }
-    // 2. 白名单城市/省份
+    if (whitelist.ips.includes(ipv4)) return false;
     const wlCityMatch = isMatched(whitelist.cities, geo.city);
     const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
-    if (wlCityMatch || wlProvinceMatch) {
-        return false;
-    }
-    // 3. 屏蔽列表 IP/城市/省份
+    if (wlCityMatch || wlProvinceMatch) return false;
     const cityMatch = isMatched(blockedList.cities, geo.city);
     const provinceMatch = isMatched(blockedList.provinces, geo.region);
-    if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch) {
-        return true;
-    }
-    // 4. 如果城市和省份都是"未知"，则屏蔽
-    if (geo.city === '未知' && geo.region === '未知') {
-        return true;
-    }
-    // 5. 双IP对比不一致则屏蔽
-    if (!geo.match) {
-        return true;
-    }
-    // 否则不屏蔽
+    if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch) return true;
+    if (geo.city === '未知' && geo.region === '未知') return true;
+    if (!geo.match) return true;
     return false;
 }
 
@@ -357,7 +316,6 @@ async function logIP(ip, action, req) {
 
         const finalBlocked = isBlocked(ipv4, geo, blockedList, whitelist);
 
-        // 构建对比信息，包含服务状态
         const compareInfo = {
             match: geo.match,
             ip666: geo.ip666,
@@ -417,7 +375,14 @@ app.use(async (req, res, next) => {
     next();
 });
 
-app.use(express.static('public'));
+// ★ 新增：静态文件请求日志（调试用）
+app.use((req, res, next) => {
+    console.log(`[静态请求] ${req.method} ${req.url}`);
+    next();
+});
+
+// ★ 使用绝对路径提供静态文件
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.use(session({
     secret: 'my-secret-key-2024',
@@ -644,7 +609,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（显示服务状态）
+// 管理后台页面（包含清空缓存按钮）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
