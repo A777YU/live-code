@@ -37,10 +37,21 @@ function saveConfig(config) {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 function getLogs() {
-  return JSON.parse(fs.readFileSync(LOG_FILE, 'utf-8'));
+  try {
+    const data = fs.readFileSync(LOG_FILE, 'utf-8');
+    return JSON.parse(data);
+  } catch (e) {
+    console.error('[getLogs] 读取日志文件失败，重置为空数组', e);
+    return [];
+  }
 }
 function saveLogs(logs) {
-  fs.writeFileSync(LOG_FILE, JSON.stringify(logs, null, 2));
+  try {
+    fs.writeFileSync(LOG_FILE, JSON.stringify(logs, null, 2));
+    console.log(`[saveLogs] 成功写入 ${logs.length} 条记录`);
+  } catch (e) {
+    console.error('[saveLogs] 写入日志文件失败', e);
+  }
 }
 function getBlocked() {
   return JSON.parse(fs.readFileSync(BLOCKED_FILE, 'utf-8'));
@@ -203,59 +214,94 @@ async function getGeoInfo(ip) {
   return result;
 }
 
-// ===== 记录日志（增强异常捕获） =====
+// ===== 记录日志（增强版：先保存基础信息，再更新地理位置） =====
 async function logIP(ip, action, req, duration = null) {
   try {
-    if (req && req.path && req.path.startsWith('/admin')) return;
-    const logs = getLogs();
-    const now = new Date().toISOString();
-    const ipv4 = getIPv4(ip);
-    const geo = await getGeoInfo(ipv4);
-    const agent = useragent.parse(req.headers['user-agent'] || '');
-    const device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
-
-    const blockedList = getBlocked();
-    const whitelist = getWhitelist();
-    let isBlocked = false;
-    if (whitelist.ips.includes(ipv4)) {
-      isBlocked = false;
-    } else {
-      const wlCityMatch = isMatched(whitelist.cities, geo.city);
-      const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
-      if (wlCityMatch || wlProvinceMatch) {
-        isBlocked = false;
-      } else {
-        const cityMatch = isMatched(blockedList.cities, geo.city);
-        const provinceMatch = isMatched(blockedList.provinces, geo.region);
-        if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch || (geo.city === '未知' && geo.region === '未知')) {
-          isBlocked = true;
-        } else {
-          isBlocked = !geo.match;
-        }
-      }
+    console.log(`[logIP] 开始记录 - IP: ${ip}, action: ${action}`);
+    if (req && req.path && req.path.startsWith('/admin')) {
+      console.log(`[logIP] 跳过 admin 路径`);
+      return;
     }
 
-    logs.push({
+    const ipv4 = getIPv4(ip);
+    const now = new Date().toISOString();
+
+    // 1. 先创建基础记录（无地理位置）
+    let logs = getLogs();
+    const baseEntry = {
       ip: ipv4,
       action: action,
       time: now,
-      country: geo.country,
-      region: geo.region,
-      city: geo.city,
-      device: device,
-      duration: duration,
-      blocked: isBlocked,
+      country: '未知',
+      region: '未知',
+      city: '未知',
+      device: '未知',
+      duration: duration || null,
+      blocked: false,
       compare: {
-        match: geo.match,
-        ip666: geo.ip666,
-        aliyun: geo.aliyun
+        match: false,
+        ip666: { region: '服务不可用', city: '服务不可用' },
+        aliyun: { region: '服务不可用', city: '服务不可用' }
       }
-    });
+    };
+    logs.push(baseEntry);
     saveLogs(logs);
-    console.log(`[logIP] 成功记录 IP ${ipv4}, action: ${action}, blocked: ${isBlocked}`);
+    console.log(`[logIP] 基础记录已保存，当前总记录数: ${logs.length}`);
+
+    // 2. 异步获取地理位置并更新记录（不阻塞响应）
+    setTimeout(async () => {
+      try {
+        const geo = await getGeoInfo(ipv4);
+        const agent = useragent.parse(req.headers['user-agent'] || '');
+        const device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
+
+        // 读取最新日志并更新最后一条匹配的记录
+        const currentLogs = getLogs();
+        const lastEntry = currentLogs.filter(l => l.ip === ipv4 && l.action === action).pop();
+        if (lastEntry) {
+          lastEntry.country = geo.country;
+          lastEntry.region = geo.region;
+          lastEntry.city = geo.city;
+          lastEntry.device = device;
+          lastEntry.compare = {
+            match: geo.match,
+            ip666: geo.ip666,
+            aliyun: geo.aliyun
+          };
+          // 重新计算 blocked 状态
+          const blockedList = getBlocked();
+          const whitelist = getWhitelist();
+          let isBlocked = false;
+          if (whitelist.ips.includes(ipv4)) {
+            isBlocked = false;
+          } else {
+            const wlCityMatch = isMatched(whitelist.cities, geo.city);
+            const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
+            if (wlCityMatch || wlProvinceMatch) {
+              isBlocked = false;
+            } else {
+              const cityMatch = isMatched(blockedList.cities, geo.city);
+              const provinceMatch = isMatched(blockedList.provinces, geo.region);
+              if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch || (geo.city === '未知' && geo.region === '未知')) {
+                isBlocked = true;
+              } else {
+                isBlocked = !geo.match;
+              }
+            }
+          }
+          lastEntry.blocked = isBlocked;
+          saveLogs(currentLogs);
+          console.log(`[logIP] 记录已更新 - IP: ${ipv4}, blocked: ${isBlocked}, 城市: ${geo.city}`);
+        } else {
+          console.log(`[logIP] 未找到匹配的记录进行更新 IP: ${ipv4}`);
+        }
+      } catch (updateErr) {
+        console.error(`[logIP] 更新记录时出错:`, updateErr);
+      }
+    }, 10); // 轻微延迟，确保前一次保存完成
+
   } catch (err) {
     console.error(`[logIP] 记录日志时出错:`, err);
-    // 即使出错也要保证服务不崩溃
   }
 }
 
@@ -286,8 +332,10 @@ app.use(session({
 app.use(async (req, res, next) => {
   const exclude = ['/admin', '/api'];
   const isExcluded = exclude.some(p => req.path.startsWith(p));
+  console.log(`[中间件] 请求路径: ${req.path}, 是否排除: ${isExcluded}`);
   if (req.method === 'GET' && !isExcluded) {
     const ip = getClientIP(req);
+    console.log(`[中间件] 捕获到访问 IP: ${ip}`);
     await logIP(ip, 'visit', req);
   }
   next();
