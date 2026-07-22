@@ -97,7 +97,7 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const IPDATACLOUD_KEY = process.env.IPDATACLOUD_KEY || '75420c4e849e11f1a82800163e167ffb';
 const ALIYUN_APPCODE = process.env.ALIYUN_APPCODE || 'e5f69ac13b5a492b86693d5e6c4f1a1b';
 
-// ----- 阿里云 -----
+// ----- 阿里云（不变） -----
 async function getAliyunGeo(ip) {
     console.log(`[阿里云] 开始查询 IP: ${ip}`);
     try {
@@ -135,14 +135,14 @@ async function getAliyunGeo(ip) {
     }
 }
 
-// ----- IP666 -----
+// ----- IP666（修改超时 3000ms，增加详细错误日志） -----
 async function getIp666Geo(ip) {
     console.log(`[IP666] 开始查询 IP: ${ip}`);
     try {
         const url = 'https://api.ipdatacloud.com/v2/query';
         const response = await axios.get(url, {
             params: { ip: ip, key: IPDATACLOUD_KEY },
-            timeout: 5000
+            timeout: 3000   // 改为 3000ms
         });
         console.log('[IP666] 原始响应:', JSON.stringify(response.data));
         const data = response.data?.data;
@@ -156,11 +156,18 @@ async function getIp666Geo(ip) {
             console.log('[IP666] 查询成功:', result);
             return result;
         } else {
-            console.log('[IP666] 查询失败，响应码:', response.data?.code);
+            console.log(`[IP666] 查询失败，响应码: ${response.data?.code}, 完整响应:`, response.data);
             return null;
         }
     } catch (e) {
-        console.error('[IP666] 请求失败:', e.message);
+        console.error(`[IP666] 请求失败:`, e.message);
+        if (e.code) console.error(`[IP666] 错误代码: ${e.code}`);
+        if (e.response) {
+            console.error(`[IP666] HTTP 状态: ${e.response.status}`);
+            console.error(`[IP666] 响应数据:`, e.response.data);
+        } else if (e.request) {
+            console.error(`[IP666] 未收到响应，请求已发送但超时或网络问题`);
+        }
         return null;
     }
 }
@@ -217,11 +224,10 @@ async function getGeoInfo(ip) {
     return result;
 }
 
-// ===== 记录IP日志（与参考代码完全一致） =====
+// ===== 记录IP日志 =====
 async function logIP(ip, action, req) {
     try {
         console.log(`[logIP] 开始记录 - IP: ${ip}, action: ${action}`);
-        // 跳过后台访问
         if (req && req.path && req.path.startsWith('/admin')) {
             console.log(`[logIP] 跳过 admin 路径`);
             return;
@@ -233,14 +239,12 @@ async function logIP(ip, action, req) {
         const blockedList = getBlocked();
         const whitelist = getWhitelist();
 
-        // 设备信息
         let device = '未知';
         if (req) {
             const agent = useragent.parse(req.headers['user-agent'] || '');
             device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
         }
 
-        // 综合判断屏蔽状态（与参考代码逻辑一致）
         let finalBlocked = false;
         if (whitelist.ips.includes(ipv4)) {
             finalBlocked = false;
@@ -293,11 +297,10 @@ function getClientIP(req) {
     return req.connection.remoteAddress || req.ip || '0.0.0.0';
 }
 
-// ===== 中间件（注意顺序：记录中间件必须放在静态文件之前） =====
+// ===== 中间件（记录优先） =====
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 
-// ★★★★★ 关键：记录中间件移到静态文件之前，确保拦截所有请求 ★★★★★
 app.use(async (req, res, next) => {
     const exclude = ['/admin', '/api'];
     const isExcluded = exclude.some(p => req.path.startsWith(p));
@@ -309,7 +312,6 @@ app.use(async (req, res, next) => {
     next();
 });
 
-// 静态文件（放在中间件之后，但中间件已经先执行）
 app.use(express.static('public'));
 
 app.use(session({
@@ -323,11 +325,9 @@ app.use(session({
 // 公开 API
 // ============================================
 
-// 获取配置（与参考代码一致，会记录 click）
 app.get('/api/config', async (req, res) => {
     const ip = getClientIP(req);
     const referer = req.headers.referer || '';
-    // 如果不是从 admin 发起的请求，记录 click
     if (!referer.includes('/admin')) {
         await logIP(ip, 'click', req);
     }
