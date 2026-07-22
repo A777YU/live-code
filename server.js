@@ -105,16 +105,18 @@ function isMatched(list, target) {
     });
 }
 
-// ===== 华为云签名函数 =====
+// ===== ★ 修正后的华为云签名函数 =====
 function signHuaweiRequest(method, url, body, appKey, appSecret) {
     const parsedUrl = new URL(url);
     const host = parsedUrl.host;
-    const path = parsedUrl.pathname + parsedUrl.search;
+    const pathname = parsedUrl.pathname;               // 不含查询参数
+    const query = parsedUrl.search ? parsedUrl.search.substring(1) : ''; // 去掉 '?'
     const xSdkDate = new Date().toISOString().replace(/[:\-.]/g, '').slice(0, 15) + 'Z';
     const bodyHash = crypto.createHash('sha256').update(body || '').digest('hex');
     const signedHeaders = 'host;x-sdk-date';
     const canonicalHeaders = `host:${host}\nx-sdk-date:${xSdkDate}\n`;
-    const canonicalRequest = `${method}\n${path}\n\n${canonicalHeaders}\n${signedHeaders}\n${bodyHash}`;
+    // canonicalRequest 格式：方法\n路径\n查询参数\n规范头部\n签名头\nbody哈希
+    const canonicalRequest = `${method}\n${pathname}\n${query}\n${canonicalHeaders}\n${signedHeaders}\n${bodyHash}`;
     const algorithm = 'SDK-HMAC-SHA256';
     const credentialScope = `${xSdkDate.slice(0, 8)}/apigateway/request`;
     const stringToSign = `${algorithm}\n${xSdkDate}\n${credentialScope}\n${crypto.createHash('sha256').update(canonicalRequest).digest('hex')}`;
@@ -128,7 +130,7 @@ function signHuaweiRequest(method, url, body, appKey, appSecret) {
     };
 }
 
-// ===== ★ 增强日志的华为风险检测 =====
+// ===== 华为风险检测 =====
 async function getHuaweiRisk(ip) {
     console.log(`[华为风险] 开始查询 IP: ${ip}`);
     try {
@@ -597,13 +599,12 @@ function requireLogin(req, res, next) {
     }
 }
 
-// ===== ★ 新增：测试风险检测接口 =====
+// ===== 测试风险检测接口 =====
 app.get('/api/test-risk/:ip', requireLogin, async (req, res) => {
     const testIp = req.params.ip;
     if (!testIp) {
         return res.status(400).json({ success: false, error: '缺少IP参数' });
     }
-    // 验证IP格式简单检查
     if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(testIp)) {
         return res.status(400).json({ success: false, error: 'IP格式无效' });
     }
@@ -784,7 +785,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（修改清空缓存逻辑）
+// 管理后台页面（完整版）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -866,7 +867,6 @@ app.get('/admin', (req, res) => {
             <button class="btn" onclick="clearCache()">🗑️ 清空 IP 缓存</button>
             <span id="clearStatus" style="margin-left:10px;font-size:13px;"></span>
         </div>
-        <!-- ★ 新增：测试风险检测工具 -->
         <div class="test-risk-area">
             <strong>风险检测测试工具</strong>
             <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
@@ -1114,7 +1114,6 @@ app.get('/admin', (req, res) => {
             });
     }
 
-    // ★ 修改：清空缓存后刷新页面
     function clearCache() {
         if(!confirm('确定清空 IP 缓存（包含风险缓存）吗？页面将刷新以应用最新数据。')) return;
         fetch('/api/clear-cache', { method:'POST' })
@@ -1124,10 +1123,7 @@ app.get('/admin', (req, res) => {
                 if(d.success){
                     status.textContent = '✅ 已清空 ' + d.cleared + ' 条缓存，页面即将刷新...';
                     status.style.color = '#155724';
-                    // 延迟1秒刷新页面，让用户看到提示
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1000);
+                    setTimeout(() => { window.location.reload(); }, 1000);
                 } else {
                     status.textContent = '❌ 清空失败';
                     status.style.color = '#721c24';
@@ -1139,7 +1135,6 @@ app.get('/admin', (req, res) => {
             });
     }
 
-    // ★ 新增：测试风险检测
     function testRisk() {
         const ip = document.getElementById('testIpInput').value.trim();
         if (!ip) {
