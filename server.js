@@ -375,13 +375,22 @@ app.use(async (req, res, next) => {
     next();
 });
 
-// ★ 新增：静态文件请求日志（调试用）
-app.use((req, res, next) => {
-    console.log(`[静态请求] ${req.method} ${req.url}`);
-    next();
+// ★ 新增：专门处理投诉页面（直接读取文件，带详细日志）
+app.get('/complaint', (req, res) => {
+    const filePath = path.join(__dirname, 'public', 'complaint.html');
+    console.log(`[投诉页面] 请求 /complaint，尝试读取: ${filePath}`);
+    fs.access(filePath, fs.constants.F_OK, (err) => {
+        if (err) {
+            console.error(`[投诉页面] 文件不存在: ${filePath}`);
+            res.status(404).send('投诉页面不存在，请检查部署');
+        } else {
+            console.log(`[投诉页面] 文件存在，发送文件`);
+            res.sendFile(filePath);
+        }
+    });
 });
 
-// ★ 使用绝对路径提供静态文件
+// ★ 静态文件中间件（作为后备）
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use(session({
@@ -609,7 +618,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（包含清空缓存按钮）
+// 管理后台页面（完整版，未改动）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
