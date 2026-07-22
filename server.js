@@ -106,9 +106,9 @@ function isMatched(list, target) {
     });
 }
 
-// ===== IP地理位置（三服务并发） =====
-const geoCache = {};
-const CACHE_TTL = 24 * 60 * 60 * 1000;
+// ===== IP地理位置（三服务并发，不使用缓存） =====
+const geoCache = {}; // 保留但不使用，可后续用于其他目的
+// 清空缓存功能依然保留，但实际已无缓存读取
 
 // ----- 阿里云 -----
 async function getAliyunGeo(ip) {
@@ -207,12 +207,9 @@ async function getBackupGeo(ip) {
 
 async function getGeoInfo(ip) {
     const ipv4 = getIPv4(ip);
-    if (geoCache[ipv4] && (Date.now() - geoCache[ipv4].timestamp < CACHE_TTL)) {
-        console.log(`[Cache] 命中缓存 IP: ${ipv4}`);
-        return geoCache[ipv4].data;
-    }
+    // ★★★ 强制每次重新查询，不使用缓存 ★★★
+    console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息（强制刷新）`);
 
-    console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息`);
     const [ip666Result, aliyunResult, backupResult] = await Promise.all([
         getIp666Geo(ipv4),
         getAliyunGeo(ipv4),
@@ -287,11 +284,12 @@ async function getGeoInfo(ip) {
     result.backup = services.backup || null;
 
     console.log('[Geo] 最终结果:', result);
+    // 可选：写入缓存（但不会读取）
     geoCache[ipv4] = { data: result, timestamp: Date.now() };
     return result;
 }
 
-// ===== 统一屏蔽判断函数（无代理检测） =====
+// ===== 统一屏蔽判断函数 =====
 function isBlocked(ip, geo, blockedList, whitelist) {
     const ipv4 = getIPv4(ip);
     if (whitelist.ips.includes(ipv4)) return false;
@@ -595,11 +593,11 @@ app.get('/api/complaints', requireLogin, (req, res) => {
     res.json(getComplaints());
 });
 
-// ===== 清空缓存 =====
+// ===== 清空缓存（保留但不实际影响，因为已不使用缓存） =====
 app.post('/api/clear-cache', requireLogin, (req, res) => {
     const keys = Object.keys(geoCache);
     keys.forEach(key => delete geoCache[key]);
-    console.log(`[clear-cache] 已清空 ${keys.length} 条地理缓存`);
+    console.log(`[clear-cache] 已清空 ${keys.length} 条缓存（但系统不再读取缓存）`);
     res.json({ success: true, cleared: keys.length });
 });
 
@@ -663,7 +661,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（移除代理检测相关列和工具）
+// 管理后台页面（完整）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
