@@ -7,22 +7,17 @@ const path = require('path');
 const axios = require('axios');
 const useragent = require('useragent');
 const multer = require('multer');
-const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ===== ★ 全部硬编码参数（无需环境变量） =====
-const HUAWEI_APPKEY = '79eb530102574552bbb80e4ec640c9dd';
-const HUAWEI_APPSECRET = '73687ab6144a4ff8a6d2a2a38495589e';   // 注意：使用华为云控制台中的正确值
+// ===== ★ 所有硬编码参数 =====
+const IPDATACLOUD_PROXY_KEY = 'd176337a85e111f1aca900163e167ffb';  // 请替换为你的真实Key
+
 const IPDATACLOUD_KEY = '75420c4e849e11f1a82800163e167ffb';
 const ALIYUN_APPCODE = 'e5f69ac13b5a492b86693d5e6c4f1a1b';
 
-console.log('[启动] 硬编码参数已加载:');
-console.log('  HUAWEI_APPKEY:', HUAWEI_APPKEY ? '已设置' : '无');
-console.log('  HUAWEI_APPSECRET:', HUAWEI_APPSECRET ? '已设置' : '无');
-console.log('  IPDATACLOUD_KEY:', IPDATACLOUD_KEY ? '已设置' : '无');
-console.log('  ALIYUN_APPCODE:', ALIYUN_APPCODE ? '已设置' : '无');
+console.log('[启动] 硬编码参数已加载');
 
 // ===== 数据目录初始化 =====
 const DATA_DIR = path.join(__dirname, 'data');
@@ -113,72 +108,47 @@ function isMatched(list, target) {
     });
 }
 
-// ===== ★ 修正后的华为云签名函数（按官方调试工具标准） =====
-function signHuaweiRequest(method, url, body, appKey, appSecret) {
-    const parsedUrl = new URL(url);
-    const host = parsedUrl.host;
-    const pathname = parsedUrl.pathname;
-    const query = parsedUrl.search ? parsedUrl.search.substring(1) : '';
-    const xSdkDate = new Date().toISOString().replace(/[:\-.]/g, '').slice(0, 15) + 'Z';
-    const bodyHash = crypto.createHash('sha256').update(body || '').digest('hex');
-
-    // ★★★ 签名头必须包含 host, user-agent, x-sdk-date, x-stage ★★★
-    const signedHeaders = 'user-agent;x-sdk-date;x-stage';
-    const userAgent = 'APIGatewayDebugClient/1.0';
-    const xStage = 'RELEASE';
-    const canonicalHeaders = `user-agent:${userAgent}\nx-sdk-date:${xSdkDate}\nx-stage:${xStage}\n`;
-    const canonicalRequest = `${method}\n${pathname}\n${query}\n${canonicalHeaders}\n${signedHeaders}\n${bodyHash}`;
-
-    const algorithm = 'SDK-HMAC-SHA256';
-    const credentialScope = `${xSdkDate.slice(0, 8)}/apigateway/request`;
-    const stringToSign = `${algorithm}\n${xSdkDate}\n${credentialScope}\n${crypto.createHash('sha256').update(canonicalRequest).digest('hex')}`;
-    const signingKey = crypto.createHmac('sha256', appSecret).update(xSdkDate.slice(0, 8)).digest();
-    const signature = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
-    const authorization = `${algorithm} Access=${appKey}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-    return {
-        'Host': host,
-        'User-Agent': userAgent,
-        'X-Sdk-Date': xSdkDate,
-        'X-Stage': xStage,
-        'Authorization': authorization
-    };
-}
-
-// ===== 华为风险检测 =====
-async function getHuaweiRisk(ip) {
-    console.log(`[华为风险] 开始查询 IP: ${ip}`);
+// ===== ★ 新的风险检测：IP数据云「IP代理识别」=====
+async function getProxyRisk(ip) {
+    console.log(`[IP代理识别] 开始查询 IP: ${ip}`);
+    if (!IPDATACLOUD_PROXY_KEY) {
+        console.log('[IP代理识别] 未配置 API Key，跳过检测');
+        return { success: false, error: '未配置' };
+    }
     try {
-        const url = `https://kzipfx.apistore.huaweicloud.com/api-mall/api/ip/portrait?ip=${ip}`;
-        const method = 'POST';
-        const body = '';
-        const headers = signHuaweiRequest(method, url, body, HUAWEI_APPKEY, HUAWEI_APPSECRET);
-        console.log(`[华为风险] 请求头:`, { Host: headers.Host, 'X-Sdk-Date': headers['X-Sdk-Date'], 'X-Stage': headers['X-Stage'], Authorization: headers.Authorization.substring(0, 50) + '...' });
-        const response = await axios({
-            method: method,
-            url: url,
-            headers: headers,
-            data: body,
+        const url = `https://api.ipdatacloud.com/v2/query?ip=${ip}&key=${IPDATACLOUD_PROXY_KEY}`;
+        const response = await axios.get(url, {
             timeout: 3000
         });
-        console.log('[华为风险] 响应状态:', response.status);
-        console.log('[华为风险] 完整响应:', JSON.stringify(response.data));
-        if (response.data && response.data.success && response.data.data) {
+        console.log('[IP代理识别] 响应状态:', response.status);
+        console.log('[IP代理识别] 完整响应:', JSON.stringify(response.data));
+
+        if (response.data && response.data.code === 200) {
             const data = response.data.data;
-            const tag = data.tag || '';
-            const level = data.level || '无';
-            const score = data.score || 0;
-            console.log(`[华为风险] 查询成功 - tag: "${tag}", level: ${level}, score: ${score}`);
-            return { success: true, data: { tag, level, score } };
+            const proxy = data.proxy || {};
+            const isProxy = proxy.is_proxy || '';
+            const proxyType = proxy.proxy || '';
+            const proxyTime = proxy.proxy_time || '';
+
+            console.log(`[IP代理识别] 查询成功 - is_proxy: "${isProxy}", proxy_type: "${proxyType}", proxy_time: "${proxyTime}"`);
+
+            return {
+                success: true,
+                data: {
+                    isProxy: isProxy,
+                    proxyType: proxyType,
+                    proxyTime: proxyTime
+                }
+            };
         } else {
-            console.log('[华为风险] 查询失败，响应结构异常:', response.data);
-            return { success: false, error: '响应异常' };
+            console.log('[IP代理识别] 查询失败，响应码:', response.data?.code);
+            return { success: false, error: `响应码 ${response.data?.code}` };
         }
     } catch (e) {
-        console.error('[华为风险] 请求失败:', e.message);
+        console.error('[IP代理识别] 请求失败:', e.message);
         if (e.response) {
-            console.error('[华为风险] HTTP状态:', e.response.status);
-            console.error('[华为风险] 响应数据:', JSON.stringify(e.response.data));
+            console.error('[IP代理识别] HTTP状态:', e.response.status);
+            console.error('[IP代理识别] 响应数据:', JSON.stringify(e.response.data));
         }
         return { success: false, error: e.message };
     }
@@ -291,31 +261,28 @@ async function getGeoInfo(ip) {
 
     if (geoCacheData && riskCacheData) {
         console.log(`[Cache] 命中完整缓存 IP: ${ipv4}`);
-        geoCacheData.riskTag = riskCacheData.tag || '';
-        geoCacheData.riskLevel = riskCacheData.level || '无';
-        geoCacheData.riskScore = riskCacheData.score || 0;
+        geoCacheData.isProxy = riskCacheData.isProxy || '';
+        geoCacheData.proxyType = riskCacheData.proxyType || '';
         return geoCacheData;
     }
 
-    console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息和风险检测`);
+    console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息和代理检测`);
     const [ip666Result, aliyunResult, backupResult, riskResult] = await Promise.all([
         getIp666Geo(ipv4),
         getAliyunGeo(ipv4),
         getBackupGeo(ipv4),
-        getHuaweiRisk(ipv4)
+        getProxyRisk(ipv4)
     ]);
 
-    let riskTag = '';
-    let riskLevel = '无';
-    let riskScore = 0;
+    let isProxy = '';
+    let proxyType = '';
     if (riskResult.success) {
-        riskTag = riskResult.data.tag || '';
-        riskLevel = riskResult.data.level || '无';
-        riskScore = riskResult.data.score || 0;
-        riskCache[ipv4] = { data: { tag: riskTag, level: riskLevel, score: riskScore }, timestamp: Date.now() };
+        isProxy = riskResult.data.isProxy || '';
+        proxyType = riskResult.data.proxyType || '';
+        riskCache[ipv4] = { data: { isProxy: isProxy, proxyType: proxyType }, timestamp: Date.now() };
     } else {
-        riskCache[ipv4] = { data: { tag: '', level: '无', score: 0 }, timestamp: Date.now() };
-        console.log(`[风险] 查询失败，IP: ${ipv4}，不进行风险屏蔽`);
+        riskCache[ipv4] = { data: { isProxy: '', proxyType: '' }, timestamp: Date.now() };
+        console.log(`[代理检测] 查询失败，IP: ${ipv4}，不进行代理屏蔽`);
     }
 
     const services = {
@@ -341,9 +308,8 @@ async function getGeoInfo(ip) {
             aliyun: { success: aliyunResult.success, data: services.aliyun, error: aliyunResult.error || null },
             backup: { success: backupResult.success, data: services.backup, error: backupResult.error || null }
         },
-        riskTag: riskTag,
-        riskLevel: riskLevel,
-        riskScore: riskScore
+        isProxy: isProxy,
+        proxyType: proxyType
     };
 
     if (successCount >= 2) {
@@ -405,9 +371,10 @@ function isBlocked(ip, geo, blockedList, whitelist) {
     if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch) return true;
     if (geo.city === '未知' && geo.region === '未知') return true;
     if (!geo.match) return true;
-    const riskTag = geo.riskTag || '';
-    if (riskTag.includes('Proxy') || riskTag.includes('VPN') || riskTag.includes('Sec_Dial')) {
-        console.log(`[屏蔽] IP ${ipv4} 因风险标签 ${riskTag} 被屏蔽`);
+    // ★ 代理检测
+    const isProxy = geo.isProxy || '';
+    if (isProxy === '是') {
+        console.log(`[屏蔽] IP ${ipv4} 因检测为代理/VPN 被屏蔽 (类型: ${geo.proxyType || '未知'})`);
         return true;
     }
     return false;
@@ -447,9 +414,8 @@ async function logIP(ip, action, req) {
                 aliyun: { success: false, data: null, error: '未知' },
                 backup: { success: false, data: null, error: '未知' }
             },
-            riskTag: geo.riskTag || '',
-            riskLevel: geo.riskLevel || '无',
-            riskScore: geo.riskScore || 0
+            isProxy: geo.isProxy || '',
+            proxyType: geo.proxyType || ''
         };
 
         const entry = {
@@ -608,13 +574,13 @@ function requireLogin(req, res, next) {
     }
 }
 
-// ===== 测试风险检测接口 =====
-app.get('/api/test-risk/:ip', requireLogin, async (req, res) => {
+// ===== 测试代理检测接口 =====
+app.get('/api/test-proxy/:ip', requireLogin, async (req, res) => {
     const testIp = req.params.ip;
     if (!testIp || !/^(\d{1,3}\.){3}\d{1,3}$/.test(testIp)) {
         return res.status(400).json({ success: false, error: 'IP格式无效' });
     }
-    const result = await getHuaweiRisk(testIp);
+    const result = await getProxyRisk(testIp);
     res.json({
         ip: testIp,
         success: result.success,
@@ -726,7 +692,7 @@ app.post('/api/clear-cache', requireLogin, (req, res) => {
     geoKeys.forEach(key => delete geoCache[key]);
     const riskKeys = Object.keys(riskCache);
     riskKeys.forEach(key => delete riskCache[key]);
-    console.log(`[clear-cache] 已清空 ${geoKeys.length} 条地理缓存，${riskKeys.length} 条风险缓存`);
+    console.log(`[clear-cache] 已清空 ${geoKeys.length} 条地理缓存，${riskKeys.length} 条代理缓存`);
     res.json({ success: true, cleared: geoKeys.length + riskKeys.length });
 });
 
@@ -744,7 +710,7 @@ app.get('/api/visitors/:type', requireLogin, (req, res) => {
                 country: entry.country,
                 region: entry.region,
                 city: entry.city,
-                compare: entry.compare || { match: false, ip666: {}, aliyun: {}, backup: null, usedBackup: false, services: {}, riskTag: '', riskLevel: '无', riskScore: 0 },
+                compare: entry.compare || { match: false, ip666: {}, aliyun: {}, backup: null, usedBackup: false, services: {}, isProxy: '', proxyType: '' },
                 device: entry.device || '未知',
                 firstTime: entry.time,
                 lastTime: entry.time,
@@ -790,7 +756,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（完整版，含测试工具）
+// 管理后台页面（完整版）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -845,12 +811,12 @@ app.get('/admin', (req, res) => {
         .service-success { background: #d4edda; color: #155724; }
         .service-fail { background: #f8d7da; color: #721c24; }
         .backup-tag { background: #ffc107; color: #000; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 4px; }
-        .risk-tag { background: #f44336; color: #fff; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 4px; }
+        .proxy-tag { background: #f44336; color: #fff; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 4px; }
         .complaint-item { border-bottom: 1px solid #eee; padding: 6px 0; font-size: 12px; }
         .complaint-item img { max-width: 80px; max-height: 80px; border-radius: 4px; margin-top: 4px; }
-        .test-risk-area { margin-top: 12px; padding: 12px; background: #f8f9fa; border-radius: 8px; }
-        .test-risk-area input { width: 150px; }
-        .test-risk-area .btn { margin-left: 8px; }
+        .test-proxy-area { margin-top: 12px; padding: 12px; background: #f8f9fa; border-radius: 8px; }
+        .test-proxy-area input { width: 150px; }
+        .test-proxy-area .btn { margin-left: 8px; }
         .test-result { margin-top: 8px; font-size: 13px; }
     </style>
 </head>
@@ -872,11 +838,11 @@ app.get('/admin', (req, res) => {
             <button class="btn" onclick="clearCache()">🗑️ 清空 IP 缓存</button>
             <span id="clearStatus" style="margin-left:10px;font-size:13px;"></span>
         </div>
-        <div class="test-risk-area">
-            <strong>风险检测测试工具</strong>
+        <div class="test-proxy-area">
+            <strong>代理检测测试工具</strong>
             <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
                 <input type="text" id="testIpInput" placeholder="输入IP地址" style="width:150px;" />
-                <button class="btn btn-sm" onclick="testRisk()">检测风险</button>
+                <button class="btn btn-sm" onclick="testProxy()">检测代理</button>
                 <span id="testResult" class="test-result"></span>
             </div>
         </div>
@@ -921,7 +887,7 @@ app.get('/admin', (req, res) => {
                         <th>IP</th>
                         <th>定位对比 & 服务状态</th>
                         <th>省份</th>
-                        <th>风险标签</th>
+                        <th>代理检测</th>
                         <th>设备</th>
                         <th>进入次数</th>
                         <th>首次时间(北京)</th>
@@ -942,7 +908,7 @@ app.get('/admin', (req, res) => {
                         <th>IP</th>
                         <th>定位对比 & 服务状态</th>
                         <th>省份</th>
-                        <th>风险标签</th>
+                        <th>代理检测</th>
                         <th>设备</th>
                         <th>进入次数</th>
                         <th>首次时间(北京)</th>
@@ -1064,9 +1030,9 @@ app.get('/admin', (req, res) => {
                     const aliyunData = services.aliyun && services.aliyun.data ? \`\${services.aliyun.data.city}(\${services.aliyun.data.region})\` : '不可用';
                     const backupData = services.backup && services.backup.data ? \`\${services.backup.data.city}(\${services.backup.data.region})\` : '不可用';
                     const usedBackup = compare.usedBackup || false;
-                    const riskTag = compare.riskTag || '';
-                    const riskLevel = compare.riskLevel || '无';
-                    let riskDisplay = riskTag ? \`<span class="risk-tag">\${riskTag}</span> (等级:\${riskLevel})\` : '无';
+                    const isProxy = compare.isProxy || '';
+                    const proxyType = compare.proxyType || '';
+                    let proxyDisplay = isProxy === '是' ? \`<span class="proxy-tag">\${isProxy} (\${proxyType || '未知'})</span>\` : '无';
 
                     let compareDisplay = \`
                         <span class="compare-badge \${badgeClass}">\${matchText}</span><br>
@@ -1082,7 +1048,7 @@ app.get('/admin', (req, res) => {
                             <td>\${item.ip}</td>
                             <td>\${compareDisplay}</td>
                             <td>\${item.region}</td>
-                            <td>\${riskDisplay}</td>
+                            <td>\${proxyDisplay}</td>
                             <td>\${item.device || '未知'}</td>
                             <td>\${item.count}</td>
                             <td>\${formatBeijingTime(item.firstTime)}</td>
@@ -1120,7 +1086,7 @@ app.get('/admin', (req, res) => {
     }
 
     function clearCache() {
-        if(!confirm('确定清空 IP 缓存（包含风险缓存）吗？页面将刷新以应用最新数据。')) return;
+        if(!confirm('确定清空 IP 缓存（包含代理缓存）吗？页面将刷新以应用最新数据。')) return;
         fetch('/api/clear-cache', { method:'POST' })
             .then(r=>r.json())
             .then(d=>{
@@ -1140,7 +1106,7 @@ app.get('/admin', (req, res) => {
             });
     }
 
-    function testRisk() {
+    function testProxy() {
         const ip = document.getElementById('testIpInput').value.trim();
         if (!ip) {
             document.getElementById('testResult').textContent = '⚠️ 请输入IP地址';
@@ -1154,18 +1120,15 @@ app.get('/admin', (req, res) => {
         }
         document.getElementById('testResult').textContent = '查询中...';
         document.getElementById('testResult').style.color = '#6b7a8f';
-        fetch('/api/test-risk/' + ip)
+        fetch('/api/test-proxy/' + ip)
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
-                    const tag = data.data.tag || '无';
-                    const level = data.data.level || '无';
-                    const score = data.data.score || 0;
-                    let msg = \`✅ 标签: \${tag}，等级: \${level}，分数: \${score}\`;
-                    if (tag.includes('Proxy') || tag.includes('VPN') || tag.includes('Sec_Dial')) {
-                        msg += ' 🔴 将被屏蔽';
-                    } else if (tag) {
-                        msg += ' ⚪ 忽略（非代理/VPN/秒拨）';
+                    const isProxy = data.data.isProxy || '否';
+                    const proxyType = data.data.proxyType || '';
+                    let msg = \`✅ is_proxy: \${isProxy}\`;
+                    if (isProxy === '是') {
+                        msg += \`，类型: \${proxyType || '未知'} 🔴 将被屏蔽\`;
                     } else {
                         msg += ' 🟢 无风险';
                     }
