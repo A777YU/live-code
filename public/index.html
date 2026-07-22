@@ -22,7 +22,6 @@
           window.location.href = blocked ? fallbackUrl : url;
         })
         .catch(() => {
-          // 出错时跳转备用
           window.location.href = 'https://example.com/fallback';
         });
     })();

@@ -5,7 +5,7 @@ const session = require('express-session');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const useragent = require('useragent'); // 用于获取设备信息，如不需要可移除
+const useragent = require('useragent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -37,10 +37,20 @@ function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 function getLogs() {
-    return JSON.parse(fs.readFileSync(LOG_FILE, 'utf-8'));
+    try {
+        return JSON.parse(fs.readFileSync(LOG_FILE, 'utf-8'));
+    } catch (e) {
+        console.error('[getLogs] 读取日志失败，重置为空数组', e);
+        return [];
+    }
 }
 function saveLogs(logs) {
-    fs.writeFileSync(LOG_FILE, JSON.stringify(logs, null, 2));
+    try {
+        fs.writeFileSync(LOG_FILE, JSON.stringify(logs, null, 2));
+        console.log(`[saveLogs] 成功写入 ${logs.length} 条记录`);
+    } catch (e) {
+        console.error('[saveLogs] 写入失败', e);
+    }
 }
 function getBlocked() {
     return JSON.parse(fs.readFileSync(BLOCKED_FILE, 'utf-8'));
@@ -55,7 +65,6 @@ function saveWhitelist(whitelist) {
     fs.writeFileSync(WHITELIST_FILE, JSON.stringify(whitelist, null, 2));
 }
 
-// ===== 辅助函数 =====
 function getIPv4(ip) {
     if (ip.startsWith('::ffff:')) return ip.substring(7);
     return ip;
@@ -156,20 +165,17 @@ async function getIp666Geo(ip) {
     }
 }
 
-// ----- 主函数：并发请求，对比省份 -----
 async function getGeoInfo(ip) {
     const ipv4 = getIPv4(ip);
     if (geoCache[ipv4] && (Date.now() - geoCache[ipv4].timestamp < CACHE_TTL)) {
         console.log(`[GeoCache] 命中缓存 IP: ${ipv4}`);
         return geoCache[ipv4].data;
     }
-
     console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息`);
     const [ip666, aliyun] = await Promise.all([
         getIp666Geo(ipv4),
         getAliyunGeo(ipv4)
     ]);
-
     let result = {
         country: '未知',
         region: '未知',
@@ -178,7 +184,6 @@ async function getGeoInfo(ip) {
         ip666: ip666 || { region: '服务不可用', city: '服务不可用' },
         aliyun: aliyun || { region: '服务不可用', city: '服务不可用' }
     };
-
     if (ip666 && aliyun) {
         const region666 = normalizeRegion(ip666.region);
         const regionAli = normalizeRegion(aliyun.region);
@@ -207,68 +212,73 @@ async function getGeoInfo(ip) {
         result.ip666 = { region: '服务不可用', city: '服务不可用' };
         result.aliyun = { region: '服务不可用', city: '服务不可用' };
     }
-
     console.log('[Geo] 最终结果:', result);
     geoCache[ipv4] = { data: result, timestamp: Date.now() };
     return result;
 }
 
-// ===== 记录IP日志（完全参考原逻辑） =====
+// ===== 记录IP日志（与参考代码完全一致） =====
 async function logIP(ip, action, req) {
-    // 跳过后台访问
-    if (req && req.path && req.path.startsWith('/admin')) {
-        return;
-    }
-    console.log(`[logIP] 开始记录 - IP: ${ip}, action: ${action}`);
-    const logs = getLogs();
-    const now = new Date().toISOString();
-    const ipv4 = getIPv4(ip);
-    const geo = await getGeoInfo(ipv4);
-    const blockedList = getBlocked();
-    const whitelist = getWhitelist();
+    try {
+        console.log(`[logIP] 开始记录 - IP: ${ip}, action: ${action}`);
+        // 跳过后台访问
+        if (req && req.path && req.path.startsWith('/admin')) {
+            console.log(`[logIP] 跳过 admin 路径`);
+            return;
+        }
+        const logs = getLogs();
+        const now = new Date().toISOString();
+        const ipv4 = getIPv4(ip);
+        const geo = await getGeoInfo(ipv4);
+        const blockedList = getBlocked();
+        const whitelist = getWhitelist();
 
-    // 获取设备信息（可选，这里保留以兼容原逻辑）
-    let device = '未知';
-    if (req) {
-        const agent = useragent.parse(req.headers['user-agent'] || '');
-        device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
-    }
+        // 设备信息
+        let device = '未知';
+        if (req) {
+            const agent = useragent.parse(req.headers['user-agent'] || '');
+            device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
+        }
 
-    // 综合判断：白名单优先，然后屏蔽列表，最后双IP对比（与原逻辑一致）
-    let finalBlocked = false;
-    if (whitelist.ips.includes(ipv4)) {
-        finalBlocked = false;
-    } else {
-        const wlCityMatch = isMatched(whitelist.cities, geo.city);
-        const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
-        if (wlCityMatch || wlProvinceMatch) {
+        // 综合判断屏蔽状态（与参考代码逻辑一致）
+        let finalBlocked = false;
+        if (whitelist.ips.includes(ipv4)) {
             finalBlocked = false;
         } else {
-            const cityMatch = isMatched(blockedList.cities, geo.city);
-            const provinceMatch = isMatched(blockedList.provinces, geo.region);
-            const isBlockedByList = blockedList.ips.includes(ipv4) || cityMatch || provinceMatch;
-            const isBlockedByCompare = !geo.match;
-            finalBlocked = isBlockedByList || isBlockedByCompare;
+            const wlCityMatch = isMatched(whitelist.cities, geo.city);
+            const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
+            if (wlCityMatch || wlProvinceMatch) {
+                finalBlocked = false;
+            } else {
+                const cityMatch = isMatched(blockedList.cities, geo.city);
+                const provinceMatch = isMatched(blockedList.provinces, geo.region);
+                const isBlockedByList = blockedList.ips.includes(ipv4) || cityMatch || provinceMatch;
+                const isBlockedByCompare = !geo.match;
+                finalBlocked = isBlockedByList || isBlockedByCompare;
+            }
         }
-    }
 
-    logs.push({
-        ip: ipv4,
-        action: action,
-        time: now,
-        country: geo.country,
-        region: geo.region,
-        city: geo.city,
-        device: device,
-        blocked: finalBlocked,
-        compare: {
-            match: geo.match,
-            ip666: geo.ip666,
-            aliyun: geo.aliyun
-        }
-    });
-    saveLogs(logs);
-    console.log(`[logIP] 记录已保存 - IP: ${ipv4}, blocked: ${finalBlocked}`);
+        const entry = {
+            ip: ipv4,
+            action: action,
+            time: now,
+            country: geo.country,
+            region: geo.region,
+            city: geo.city,
+            device: device,
+            blocked: finalBlocked,
+            compare: {
+                match: geo.match,
+                ip666: geo.ip666,
+                aliyun: geo.aliyun
+            }
+        };
+        logs.push(entry);
+        saveLogs(logs);
+        console.log(`[logIP] 记录已保存 - IP: ${ipv4}, blocked: ${finalBlocked}`);
+    } catch (err) {
+        console.error('[logIP] 记录日志时发生异常:', err);
+    }
 }
 
 function getClientIP(req) {
@@ -283,18 +293,11 @@ function getClientIP(req) {
     return req.connection.remoteAddress || req.ip || '0.0.0.0';
 }
 
-// ===== 中间件 =====
+// ===== 中间件（注意顺序：记录中间件必须放在静态文件之前） =====
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
-app.use(express.static('public'));
-app.use(session({
-    secret: 'my-secret-key-2024',
-    resave: false,
-    saveUninitialized: true,
-    cookie: { secure: false }
-}));
 
-// 记录访问（排除后台和API）
+// ★★★★★ 关键：记录中间件移到静态文件之前，确保拦截所有请求 ★★★★★
 app.use(async (req, res, next) => {
     const exclude = ['/admin', '/api'];
     const isExcluded = exclude.some(p => req.path.startsWith(p));
@@ -306,15 +309,25 @@ app.use(async (req, res, next) => {
     next();
 });
 
+// 静态文件（放在中间件之后，但中间件已经先执行）
+app.use(express.static('public'));
+
+app.use(session({
+    secret: 'my-secret-key-2024',
+    resave: false,
+    saveUninitialized: true,
+    cookie: { secure: false }
+}));
+
 // ============================================
 // 公开 API
 // ============================================
 
-// 获取配置并记录点击（与原逻辑一致）
+// 获取配置（与参考代码一致，会记录 click）
 app.get('/api/config', async (req, res) => {
     const ip = getClientIP(req);
-    // 记录点击事件（但原代码中通过 referer 判断是否来自 admin）
     const referer = req.headers.referer || '';
+    // 如果不是从 admin 发起的请求，记录 click
     if (!referer.includes('/admin')) {
         await logIP(ip, 'click', req);
     }
@@ -325,7 +338,6 @@ app.get('/api/config', async (req, res) => {
     const blockedList = getBlocked();
     const whitelist = getWhitelist();
 
-    // 屏蔽判断（与原逻辑完全一致）
     let isBlocked = false;
     if (whitelist.ips.includes(ipv4)) {
         isBlocked = false;
@@ -342,13 +354,7 @@ app.get('/api/config', async (req, res) => {
             } else if (geo.city === '未知' && geo.region === '未知') {
                 isBlocked = true;
             } else {
-                // 双IP对比
-                if (!geo.match) {
-                    isBlocked = true;
-                    // 记录屏蔽日志（原逻辑会记录 block_log，这里简单跳过）
-                } else {
-                    isBlocked = false;
-                }
+                isBlocked = !geo.match;
             }
         }
     }
@@ -486,7 +492,7 @@ app.delete('/api/whitelist/:type/:value', requireLogin, (req, res) => {
 // ===== 访客统计（被屏蔽/未屏蔽） =====
 app.get('/api/visitors/:type', requireLogin, (req, res) => {
     const type = req.params.type;
-    const logs = getLogs().filter(l => l.action === 'visit');
+    const logs = getLogs().filter(l => l.action === 'visit' || l.action === 'click');
     const map = {};
 
     logs.forEach(entry => {
@@ -521,7 +527,7 @@ app.get('/api/visitors/:type', requireLogin, (req, res) => {
 
 // ===== 今日统计 =====
 app.get('/api/stats', requireLogin, (req, res) => {
-    const logs = getLogs().filter(l => l.action === 'visit');
+    const logs = getLogs().filter(l => l.action === 'visit' || l.action === 'click');
     const today = new Date().toISOString().slice(0, 10);
     const todayLogs = logs.filter(l => l.time.startsWith(today));
     const ipMap = {};
@@ -544,7 +550,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（精简版，只显示所需功能）
+// 管理后台页面（精简版）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
