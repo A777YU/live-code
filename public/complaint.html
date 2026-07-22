@@ -8,8 +8,7 @@
     * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, "PingFang SC", Arial, sans-serif; }
     body { background: #f0f4f8; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 20px; }
     .container { max-width: 420px; width: 100%; background: #fff; border-radius: 28px; padding: 28px 24px 32px; box-shadow: 0 10px 40px rgba(0,0,0,0.06); }
-    h1 { font-size: 24px; color: #1a3a5c; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
-    h1 .icon { font-size: 28px; }
+    h1 { font-size: 24px; color: #1a3a5c; margin-bottom: 6px; }
     .sub { color: #6b7a8f; font-size: 14px; margin-bottom: 24px; border-left: 3px solid #4a8bc2; padding-left: 12px; }
     .form-group { margin-bottom: 18px; }
     label { display: block; font-weight: 500; color: #1a3a5c; font-size: 14px; margin-bottom: 6px; }
@@ -31,12 +30,11 @@
     .toast.success { background: #00b894; }
     .toast.error { background: #e17055; }
     .footer { margin-top: 24px; text-align: center; font-size: 12px; color: #8aaac0; }
-    @media (max-width: 480px) { .container { padding: 20px 16px; } }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1><span class="icon">📩</span> 投诉反馈</h1>
+    <h1>投诉反馈</h1>
     <div class="sub">我们会认真对待每一条反馈，感谢您的监督。</div>
 
     <div class="form-group">
@@ -52,7 +50,7 @@
     <div class="form-group">
       <label>附件（可选）</label>
       <div class="file-upload">
-        <label for="fileInput">📎 选择图片</label>
+        <label for="fileInput">选择图片</label>
         <input type="file" id="fileInput" accept="image/*" />
         <span class="file-name" id="fileName">未选择文件</span>
       </div>
@@ -86,7 +84,6 @@
         }, 3000);
       }
 
-      // 文件预览
       fileInput.addEventListener('change', function() {
         const file = this.files[0];
         if (file) {
@@ -132,18 +129,17 @@
           });
           const data = await res.json();
           if (data.success) {
-            showToast('✅ 投诉已提交，感谢您的反馈', 'success');
-            // 清空表单
+            showToast('投诉已提交，感谢您的反馈', 'success');
             contact.value = '';
             content.value = '';
             fileInput.value = '';
             fileName.textContent = '未选择文件';
             preview.style.display = 'none';
           } else {
-            showToast('❌ ' + (data.message || '提交失败，请重试'), 'error');
+            showToast('提交失败：' + (data.message || '请重试'), 'error');
           }
         } catch (err) {
-          showToast('❌ 网络错误，请检查连接', 'error');
+          showToast('网络错误，请检查连接', 'error');
         } finally {
           submitBtn.disabled = false;
           submitBtn.textContent = '提交投诉';

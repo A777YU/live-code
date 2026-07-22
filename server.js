@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const useragent = require('useragent');
+const multer = require('multer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,6 +17,7 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const LOG_FILE = path.join(DATA_DIR, 'ip_log.json');
 const BLOCKED_FILE = path.join(DATA_DIR, 'blocked.json');
 const WHITELIST_FILE = path.join(DATA_DIR, 'whitelist.json');
+const COMPLAINTS_FILE = path.join(DATA_DIR, 'complaints.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(CONFIG_FILE)) {
@@ -28,6 +30,7 @@ if (!fs.existsSync(BLOCKED_FILE)) {
 if (!fs.existsSync(WHITELIST_FILE)) {
     fs.writeFileSync(WHITELIST_FILE, JSON.stringify({ ips: [], cities: [], provinces: [] }));
 }
+if (!fs.existsSync(COMPLAINTS_FILE)) fs.writeFileSync(COMPLAINTS_FILE, JSON.stringify([]));
 
 // ===== 工具函数 =====
 function getConfig() {
@@ -63,6 +66,12 @@ function getWhitelist() {
 }
 function saveWhitelist(whitelist) {
     fs.writeFileSync(WHITELIST_FILE, JSON.stringify(whitelist, null, 2));
+}
+function getComplaints() {
+    return JSON.parse(fs.readFileSync(COMPLAINTS_FILE, 'utf-8'));
+}
+function saveComplaints(complaints) {
+    fs.writeFileSync(COMPLAINTS_FILE, JSON.stringify(complaints, null, 2));
 }
 
 function getIPv4(ip) {
@@ -278,7 +287,7 @@ async function getGeoInfo(ip) {
     return result;
 }
 
-// ===== ★ 统一屏蔽判断函数 =====
+// ===== 统一屏蔽判断函数 =====
 function isBlocked(ip, geo, blockedList, whitelist) {
     const ipv4 = getIPv4(ip);
     if (whitelist.ips.includes(ipv4)) return false;
@@ -375,7 +384,6 @@ app.use(async (req, res, next) => {
     next();
 });
 
-// ★ 新增：专门处理投诉页面（直接读取文件，带详细日志）
 app.get('/complaint', (req, res) => {
     const filePath = path.join(__dirname, 'public', 'complaint.html');
     console.log(`[投诉页面] 请求 /complaint，尝试读取: ${filePath}`);
@@ -390,7 +398,6 @@ app.get('/complaint', (req, res) => {
     });
 });
 
-// ★ 静态文件中间件（作为后备）
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use(session({
@@ -399,6 +406,22 @@ app.use(session({
     saveUninitialized: true,
     cookie: { secure: false }
 }));
+
+// ===== Multer 配置（图片上传） =====
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        const uploadDir = path.join(__dirname, 'uploads');
+        if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+        cb(null, uploadDir);
+    },
+    filename: function (req, file, cb) {
+        const unique = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, unique + '-' + file.originalname);
+    }
+});
+const upload = multer({ storage: storage, limits: { fileSize: 2 * 1024 * 1024 } });
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ============================================
 // 公开 API
@@ -424,6 +447,23 @@ app.get('/api/config', async (req, res) => {
         fallbackUrl: config.fallbackUrl || 'https://example.com/fallback',
         blocked: isBlockedResult
     });
+});
+
+app.post('/api/complaint', upload.single('image'), (req, res) => {
+    const text = req.body.text || '';
+    const contact = req.body.contact || '';
+    const imageFile = req.file;
+    const complaint = {
+        id: Date.now(),
+        text,
+        contact,
+        image: imageFile ? `/uploads/${imageFile.filename}` : null,
+        createdAt: new Date().toISOString()
+    };
+    const complaints = getComplaints();
+    complaints.push(complaint);
+    saveComplaints(complaints);
+    res.json({ success: true, message: '投诉提交成功' });
 });
 
 // ============================================
@@ -549,6 +589,11 @@ app.delete('/api/whitelist/:type/:value', requireLogin, (req, res) => {
     res.json({ success: true });
 });
 
+// 投诉列表（管理后台查看）
+app.get('/api/complaints', requireLogin, (req, res) => {
+    res.json(getComplaints());
+});
+
 // ===== 清空缓存 API =====
 app.post('/api/clear-cache', requireLogin, (req, res) => {
     const keys = Object.keys(geoCache);
@@ -557,7 +602,7 @@ app.post('/api/clear-cache', requireLogin, (req, res) => {
     res.json({ success: true, cleared: keys.length });
 });
 
-// ===== 访客统计（被屏蔽/未屏蔽） =====
+// ===== 访客统计 =====
 app.get('/api/visitors/:type', requireLogin, (req, res) => {
     const type = req.params.type;
     const logs = getLogs().filter(l => l.action === 'visit');
@@ -593,7 +638,6 @@ app.get('/api/visitors/:type', requireLogin, (req, res) => {
     res.json(result);
 });
 
-// ===== 今日统计 =====
 app.get('/api/stats', requireLogin, (req, res) => {
     const logs = getLogs().filter(l => l.action === 'visit');
     const today = new Date().toISOString().slice(0, 10);
@@ -618,7 +662,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（完整版，未改动）
+// 管理后台页面（完整，含清空缓存和投诉列表）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -673,6 +717,8 @@ app.get('/admin', (req, res) => {
         .service-success { background: #d4edda; color: #155724; }
         .service-fail { background: #f8d7da; color: #721c24; }
         .backup-tag { background: #ffc107; color: #000; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 4px; }
+        .complaint-item { border-bottom: 1px solid #eee; padding: 6px 0; font-size: 12px; }
+        .complaint-item img { max-width: 80px; max-height: 80px; border-radius: 4px; margin-top: 4px; }
     </style>
 </head>
 <body>
@@ -763,6 +809,11 @@ app.get('/admin', (req, res) => {
                 <tbody id="unblockedVisitorBody"><tr><td colspan="7">加载中...</td></tr></tbody>
             </table>
         </div>
+    </div>
+
+    <div class="card">
+        <h3>📩 投诉列表</h3>
+        <div id="complaintList"><p>加载中...</p></div>
     </div>
 </div>
 
@@ -898,6 +949,29 @@ app.get('/admin', (req, res) => {
             });
     }
 
+    function loadComplaints() {
+        fetch('/api/complaints')
+            .then(r => r.json())
+            .then(data => {
+                const list = document.getElementById('complaintList');
+                if (!data || data.length === 0) {
+                    list.innerHTML = '<p style="color:#888;font-size:13px;">暂无投诉</p>';
+                    return;
+                }
+                list.innerHTML = data.map(c => \`
+                    <div class="complaint-item">
+                        <div><strong>时间：</strong>\${formatBeijingTime(c.createdAt)}</div>
+                        <div><strong>联系方式：</strong>\${c.contact || '未填写'}</div>
+                        <div><strong>内容：</strong>\${c.text || '（无文字）'}</div>
+                        \${c.image ? '<div><strong>图片：</strong><br><img src="' + c.image + '" /></div>' : ''}
+                    </div>
+                \`).join('');
+            })
+            .catch(() => {
+                document.getElementById('complaintList').innerHTML = '<p style="color:#888;font-size:13px;">加载失败</p>';
+            });
+    }
+
     function clearCache() {
         if(!confirm('确定清空 IP 定位缓存吗？')) return;
         fetch('/api/clear-cache', { method:'POST' })
@@ -928,11 +1002,13 @@ app.get('/admin', (req, res) => {
     loadWhitelist();
     loadVisitors('blocked');
     loadVisitors('unblocked');
+    loadComplaints();
 
     setInterval(() => {
         loadStats();
         loadVisitors('blocked');
         loadVisitors('unblocked');
+        loadComplaints();
     }, 30000);
 </script>
 </body>
