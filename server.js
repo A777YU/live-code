@@ -87,12 +87,13 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const IPDATACLOUD_KEY = process.env.IPDATACLOUD_KEY || '75420c4e849e11f1a82800163e167ffb';
 const ALIYUN_APPCODE = process.env.ALIYUN_APPCODE || 'e5f69ac13b5a492b86693d5e6c4f1a1b';
 
+// ---------- 阿里云（超时 2000ms） ----------
 async function getAliyunGeo(ip) {
   try {
     const response = await axios.get('https://jisuip.market.alicloudapi.com/ip/location', {
       params: { ip },
       headers: { 'Authorization': 'APPCODE ' + ALIYUN_APPCODE },
-      timeout: 3000
+      timeout: 2000
     });
     let data = null;
     if (response.data) {
@@ -113,11 +114,12 @@ async function getAliyunGeo(ip) {
   }
 }
 
+// ---------- IP666（超时 3000ms） ----------
 async function getIp666Geo(ip) {
   try {
     const response = await axios.get('https://api.ipdatacloud.com/v2/query', {
       params: { ip, key: IPDATACLOUD_KEY },
-      timeout: 5000
+      timeout: 3000
     });
     const data = response.data?.data;
     if (data && (response.data.code == 200 || response.data.code == 0)) {
@@ -184,6 +186,7 @@ async function getGeoInfo(ip) {
   return result;
 }
 
+// ===== 记录日志 =====
 async function logIP(ip, action, req, duration = null) {
   if (req && req.path && req.path.startsWith('/admin')) return;
   const logs = getLogs();
@@ -245,6 +248,7 @@ function getClientIP(req) {
   return req.connection.remoteAddress || req.ip || '0.0.0.0';
 }
 
+// ===== 中间件 =====
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(express.static('public'));
@@ -255,6 +259,7 @@ app.use(session({
   cookie: { secure: false }
 }));
 
+// 记录访问（排除后台和API）
 app.use(async (req, res, next) => {
   const exclude = ['/admin', '/api'];
   const isExcluded = exclude.some(p => req.path.startsWith(p));
@@ -265,6 +270,9 @@ app.use(async (req, res, next) => {
   next();
 });
 
+// ============================================
+// 公开 API：获取配置并记录时长
+// ============================================
 app.get('/api/config', async (req, res) => {
   const ip = getClientIP(req);
   const ipv4 = getIPv4(ip);
@@ -314,6 +322,9 @@ app.get('/api/config', async (req, res) => {
   });
 });
 
+// ============================================
+// 管理后台（登录、配置、黑白名单、访客统计）
+// ============================================
 app.post('/admin/login', (req, res) => {
   const { password } = req.body;
   if (password === '123456') {
@@ -341,6 +352,7 @@ function requireLogin(req, res, next) {
   }
 }
 
+// 获取/更新链接配置
 app.get('/api/config', requireLogin, (req, res) => {
   res.json(getConfig());
 });
@@ -354,6 +366,7 @@ app.post('/api/config', requireLogin, (req, res) => {
   res.json({ success: true });
 });
 
+// 屏蔽管理
 app.get('/api/blocked', requireLogin, (req, res) => {
   res.json(getBlocked());
 });
@@ -392,6 +405,7 @@ app.delete('/api/blocked/:type/:value', requireLogin, (req, res) => {
   res.json({ success: true });
 });
 
+// 白名单管理
 app.get('/api/whitelist', requireLogin, (req, res) => {
   res.json(getWhitelist());
 });
@@ -430,6 +444,7 @@ app.delete('/api/whitelist/:type/:value', requireLogin, (req, res) => {
   res.json({ success: true });
 });
 
+// ===== 访客统计（被屏蔽/未屏蔽） =====
 app.get('/api/visitors/:type', requireLogin, (req, res) => {
   const type = req.params.type;
   const logs = getLogs().filter(l => l.action === 'visit');
@@ -478,6 +493,7 @@ app.get('/api/visitors/:type', requireLogin, (req, res) => {
   res.json(result);
 });
 
+// ===== 今日统计 =====
 app.get('/api/stats', requireLogin, (req, res) => {
   const logs = getLogs().filter(l => l.action === 'visit');
   const today = new Date().toISOString().slice(0, 10);
@@ -501,6 +517,9 @@ app.get('/api/stats', requireLogin, (req, res) => {
   });
 });
 
+// ============================================
+// 管理后台页面（完整版，已包含所有功能）
+// ============================================
 app.get('/admin', (req, res) => {
   if (req.session.loggedIn) {
     res.send(`
@@ -817,6 +836,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", Arial, san
   }
 });
 
+// ===== 启动 =====
 app.listen(PORT, () => {
   console.log('🚀 服务已启动，端口：' + PORT);
   console.log('🌐 活码页面：http://localhost:' + PORT);
