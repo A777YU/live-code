@@ -135,7 +135,7 @@ async function getAliyunGeo(ip) {
     }
 }
 
-// ----- IP666（超时 3000ms，详细错误日志） -----
+// ----- IP666（超时 3000ms） -----
 async function getIp666Geo(ip) {
     console.log(`[IP666] 开始查询 IP: ${ip}`);
     try {
@@ -156,18 +156,11 @@ async function getIp666Geo(ip) {
             console.log('[IP666] 查询成功:', result);
             return result;
         } else {
-            console.log(`[IP666] 查询失败，响应码: ${response.data?.code}, 完整响应:`, response.data);
+            console.log(`[IP666] 查询失败，响应码: ${response.data?.code}`);
             return null;
         }
     } catch (e) {
-        console.error(`[IP666] 请求失败:`, e.message);
-        if (e.code) console.error(`[IP666] 错误代码: ${e.code}`);
-        if (e.response) {
-            console.error(`[IP666] HTTP 状态: ${e.response.status}`);
-            console.error(`[IP666] 响应数据:`, e.response.data);
-        } else if (e.request) {
-            console.error(`[IP666] 未收到响应，请求已发送但超时或网络问题`);
-        }
+        console.error('[IP666] 请求失败:', e.message);
         return null;
     }
 }
@@ -224,6 +217,37 @@ async function getGeoInfo(ip) {
     return result;
 }
 
+// ===== ★ 统一屏蔽判断函数（严格参照参考代码） =====
+function isBlocked(ip, geo, blockedList, whitelist) {
+    const ipv4 = getIPv4(ip);
+    // 1. 白名单IP优先
+    if (whitelist.ips.includes(ipv4)) {
+        return false;
+    }
+    // 2. 白名单城市/省份
+    const wlCityMatch = isMatched(whitelist.cities, geo.city);
+    const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
+    if (wlCityMatch || wlProvinceMatch) {
+        return false;
+    }
+    // 3. 屏蔽列表 IP/城市/省份
+    const cityMatch = isMatched(blockedList.cities, geo.city);
+    const provinceMatch = isMatched(blockedList.provinces, geo.region);
+    if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch) {
+        return true;
+    }
+    // 4. 如果城市和省份都是"未知"，则屏蔽
+    if (geo.city === '未知' && geo.region === '未知') {
+        return true;
+    }
+    // 5. 双IP对比不一致则屏蔽
+    if (!geo.match) {
+        return true;
+    }
+    // 否则不屏蔽
+    return false;
+}
+
 // ===== 记录IP日志 =====
 async function logIP(ip, action, req) {
     try {
@@ -245,22 +269,8 @@ async function logIP(ip, action, req) {
             device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
         }
 
-        let finalBlocked = false;
-        if (whitelist.ips.includes(ipv4)) {
-            finalBlocked = false;
-        } else {
-            const wlCityMatch = isMatched(whitelist.cities, geo.city);
-            const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
-            if (wlCityMatch || wlProvinceMatch) {
-                finalBlocked = false;
-            } else {
-                const cityMatch = isMatched(blockedList.cities, geo.city);
-                const provinceMatch = isMatched(blockedList.provinces, geo.region);
-                const isBlockedByList = blockedList.ips.includes(ipv4) || cityMatch || provinceMatch;
-                const isBlockedByCompare = !geo.match;
-                finalBlocked = isBlockedByList || isBlockedByCompare;
-            }
-        }
+        // ★ 使用统一的判断函数
+        const finalBlocked = isBlocked(ipv4, geo, blockedList, whitelist);
 
         const entry = {
             ip: ipv4,
@@ -297,7 +307,7 @@ function getClientIP(req) {
     return req.connection.remoteAddress || req.ip || '0.0.0.0';
 }
 
-// ===== 中间件（记录优先） =====
+// ===== 中间件 =====
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 
@@ -338,31 +348,13 @@ app.get('/api/config', async (req, res) => {
     const blockedList = getBlocked();
     const whitelist = getWhitelist();
 
-    let isBlocked = false;
-    if (whitelist.ips.includes(ipv4)) {
-        isBlocked = false;
-    } else {
-        const wlCityMatch = isMatched(whitelist.cities, geo.city);
-        const wlProvinceMatch = isMatched(whitelist.provinces, geo.region);
-        if (wlCityMatch || wlProvinceMatch) {
-            isBlocked = false;
-        } else {
-            const cityMatch = isMatched(blockedList.cities, geo.city);
-            const provinceMatch = isMatched(blockedList.provinces, geo.region);
-            if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch) {
-                isBlocked = true;
-            } else if (geo.city === '未知' && geo.region === '未知') {
-                isBlocked = true;
-            } else {
-                isBlocked = !geo.match;
-            }
-        }
-    }
+    // ★ 使用统一的判断函数
+    const isBlockedResult = isBlocked(ipv4, geo, blockedList, whitelist);
 
     res.json({
         url: config.url,
         fallbackUrl: config.fallbackUrl || 'https://example.com/fallback',
-        blocked: isBlocked
+        blocked: isBlockedResult
     });
 });
 
@@ -500,7 +492,7 @@ app.post('/api/clear-cache', requireLogin, (req, res) => {
 // ===== 访客统计（被屏蔽/未屏蔽） =====
 app.get('/api/visitors/:type', requireLogin, (req, res) => {
     const type = req.params.type;
-    // ★★★ 只统计 visit 动作，不再统计 click ★★★
+    // 只统计 visit 动作
     const logs = getLogs().filter(l => l.action === 'visit');
     const map = {};
 
@@ -536,7 +528,7 @@ app.get('/api/visitors/:type', requireLogin, (req, res) => {
 
 // ===== 今日统计 =====
 app.get('/api/stats', requireLogin, (req, res) => {
-    const logs = getLogs().filter(l => l.action === 'visit'); // 只统计 visit
+    const logs = getLogs().filter(l => l.action === 'visit');
     const today = new Date().toISOString().slice(0, 10);
     const todayLogs = logs.filter(l => l.time.startsWith(today));
     const ipMap = {};
@@ -559,7 +551,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（带清空缓存按钮）
+// 管理后台页面（包含清空缓存按钮）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -626,7 +618,6 @@ app.get('/admin', (req, res) => {
             <div class="stat-item"><div class="number" id="blockedVisits">0</div><div class="label">已屏蔽</div></div>
             <div class="stat-item"><div class="number" id="unblockedVisits">0</div><div class="label">未屏蔽</div></div>
         </div>
-        <!-- 清空缓存按钮 -->
         <div class="cache-btn">
             <button class="btn" onclick="clearCache()">🗑️ 清空 IP 缓存</button>
             <span id="clearStatus" style="margin-left:10px;font-size:13px;"></span>
@@ -824,7 +815,6 @@ app.get('/admin', (req, res) => {
             });
     }
 
-    // ★★★ 清空缓存函数 ★★★
     function clearCache() {
         if(!confirm('确定清空 IP 定位缓存吗？')) return;
         fetch('/api/clear-cache', { method:'POST' })
