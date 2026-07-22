@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>投诉反馈</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, "PingFang SC", Arial, sans-serif; }
+    body { background: #f0f4f8; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 20px; }
+    .container { max-width: 420px; width: 100%; background: #fff; border-radius: 28px; padding: 28px 24px 32px; box-shadow: 0 10px 40px rgba(0,0,0,0.06); }
+    h1 { font-size: 24px; color: #1a3a5c; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    h1 .icon { font-size: 28px; }
+    .sub { color: #6b7a8f; font-size: 14px; margin-bottom: 24px; border-left: 3px solid #4a8bc2; padding-left: 12px; }
+    .form-group { margin-bottom: 18px; }
+    label { display: block; font-weight: 500; color: #1a3a5c; font-size: 14px; margin-bottom: 6px; }
+    input, textarea { width: 100%; padding: 12px 14px; border: 1px solid #dce4ec; border-radius: 16px; font-size: 15px; transition: border-color 0.2s; background: #fafcfe; }
+    input:focus, textarea:focus { border-color: #4a8bc2; outline: none; background: #fff; }
+    textarea { height: 100px; resize: vertical; }
+    .file-upload { display: flex; align-items: center; gap: 12px; margin: 6px 0 4px; }
+    .file-upload label { background: #eef3f8; padding: 8px 18px; border-radius: 30px; cursor: pointer; font-size: 14px; transition: background 0.2s; }
+    .file-upload label:hover { background: #dce4ec; }
+    .file-upload input[type="file"] { display: none; }
+    .file-name { font-size: 13px; color: #6b7a8f; }
+    .preview { margin-top: 8px; max-width: 100%; max-height: 150px; border-radius: 12px; display: none; }
+    .btn-submit { width: 100%; padding: 14px; background: #1a3a6a; color: #fff; border: none; border-radius: 40px; font-size: 18px; font-weight: 600; cursor: pointer; transition: background 0.2s, transform 0.1s; margin-top: 8px; }
+    .btn-submit:hover { background: #0b1e3a; }
+    .btn-submit:active { transform: scale(0.97); }
+    .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+    .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #1a3a5c; color: #fff; padding: 12px 24px; border-radius: 40px; font-size: 15px; box-shadow: 0 6px 20px rgba(0,0,0,0.15); opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 999; }
+    .toast.show { opacity: 1; }
+    .toast.success { background: #00b894; }
+    .toast.error { background: #e17055; }
+    .footer { margin-top: 24px; text-align: center; font-size: 12px; color: #8aaac0; }
+    @media (max-width: 480px) { .container { padding: 20px 16px; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1><span class="icon">📩</span> 投诉反馈</h1>
+    <div class="sub">我们会认真对待每一条反馈，感谢您的监督。</div>
+
+    <div class="form-group">
+      <label>联系方式 <span style="color:#e17055;">*</span></label>
+      <input type="text" id="contact" placeholder="手机号 / 邮箱" />
+    </div>
+
+    <div class="form-group">
+      <label>投诉内容 <span style="color:#e17055;">*</span></label>
+      <textarea id="content" placeholder="请详细描述您的投诉内容..."></textarea>
+    </div>
+
+    <div class="form-group">
+      <label>附件（可选）</label>
+      <div class="file-upload">
+        <label for="fileInput">📎 选择图片</label>
+        <input type="file" id="fileInput" accept="image/*" />
+        <span class="file-name" id="fileName">未选择文件</span>
+      </div>
+      <img id="preview" class="preview" />
+    </div>
+
+    <button class="btn-submit" id="submitBtn">提交投诉</button>
+    <div class="footer">投诉处理时间 1~3 个工作日</div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    (function() {
+      const contact = document.getElementById('contact');
+      const content = document.getElementById('content');
+      const fileInput = document.getElementById('fileInput');
+      const fileName = document.getElementById('fileName');
+      const preview = document.getElementById('preview');
+      const submitBtn = document.getElementById('submitBtn');
+      const toast = document.getElementById('toast');
+
+      let toastTimer = null;
+
+      function showToast(msg, type) {
+        toast.textContent = msg;
+        toast.className = 'toast show ' + (type || '');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          toast.classList.remove('show');
+        }, 3000);
+      }
+
+      // 文件预览
+      fileInput.addEventListener('change', function() {
+        const file = this.files[0];
+        if (file) {
+          fileName.textContent = file.name;
+          const reader = new FileReader();
+          reader.onload = function(e) {
+            preview.src = e.target.result;
+            preview.style.display = 'block';
+          };
+          reader.readAsDataURL(file);
+        } else {
+          fileName.textContent = '未选择文件';
+          preview.style.display = 'none';
+        }
+      });
+
+      submitBtn.addEventListener('click', async function() {
+        const contactVal = contact.value.trim();
+        const contentVal = content.value.trim();
+        if (!contactVal) {
+          showToast('请填写联系方式', 'error');
+          return;
+        }
+        if (!contentVal) {
+          showToast('请填写投诉内容', 'error');
+          return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = '提交中...';
+
+        const formData = new FormData();
+        formData.append('contact', contactVal);
+        formData.append('text', contentVal);
+        if (fileInput.files[0]) {
+          formData.append('image', fileInput.files[0]);
+        }
+
+        try {
+          const res = await fetch('/api/complaint', {
+            method: 'POST',
+            body: formData
+          });
+          const data = await res.json();
+          if (data.success) {
+            showToast('✅ 投诉已提交，感谢您的反馈', 'success');
+            // 清空表单
+            contact.value = '';
+            content.value = '';
+            fileInput.value = '';
+            fileName.textContent = '未选择文件';
+            preview.style.display = 'none';
+          } else {
+            showToast('❌ ' + (data.message || '提交失败，请重试'), 'error');
+          }
+        } catch (err) {
+          showToast('❌ 网络错误，请检查连接', 'error');
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.textContent = '提交投诉';
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
