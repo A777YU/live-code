@@ -97,7 +97,7 @@ const CACHE_TTL = 24 * 60 * 60 * 1000;
 const IPDATACLOUD_KEY = process.env.IPDATACLOUD_KEY || '75420c4e849e11f1a82800163e167ffb';
 const ALIYUN_APPCODE = process.env.ALIYUN_APPCODE || 'e5f69ac13b5a492b86693d5e6c4f1a1b';
 
-// ----- 阿里云（不变） -----
+// ----- 阿里云 -----
 async function getAliyunGeo(ip) {
     console.log(`[阿里云] 开始查询 IP: ${ip}`);
     try {
@@ -135,14 +135,14 @@ async function getAliyunGeo(ip) {
     }
 }
 
-// ----- IP666（修改超时 3000ms，增加详细错误日志） -----
+// ----- IP666 -----
 async function getIp666Geo(ip) {
     console.log(`[IP666] 开始查询 IP: ${ip}`);
     try {
         const url = 'https://api.ipdatacloud.com/v2/query';
         const response = await axios.get(url, {
             params: { ip: ip, key: IPDATACLOUD_KEY },
-            timeout: 3000   // 改为 3000ms
+            timeout: 3000
         });
         console.log('[IP666] 原始响应:', JSON.stringify(response.data));
         const data = response.data?.data;
@@ -297,7 +297,7 @@ function getClientIP(req) {
     return req.connection.remoteAddress || req.ip || '0.0.0.0';
 }
 
-// ===== 中间件（记录优先） =====
+// ===== 中间件 =====
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 
@@ -489,10 +489,31 @@ app.delete('/api/whitelist/:type/:value', requireLogin, (req, res) => {
     res.json({ success: true });
 });
 
+// ===== 清空缓存接口（需登录） =====
+app.post('/api/admin/clear-cache', requireLogin, (req, res) => {
+    try {
+        // 清空地理缓存
+        for (let key in geoCache) {
+            delete geoCache[key];
+        }
+        console.log('[清空缓存] 地理缓存已清空');
+
+        // 可选：清空日志（保留空数组）
+        // 为了安全，这里不自动清空日志，只清空缓存
+        // 如果用户需要清空日志，可以单独提供一个接口
+
+        res.json({ success: true, message: '缓存已清空' });
+    } catch (err) {
+        console.error('[清空缓存] 出错:', err);
+        res.status(500).json({ success: false, message: '清空缓存失败' });
+    }
+});
+
 // ===== 访客统计（被屏蔽/未屏蔽） =====
 app.get('/api/visitors/:type', requireLogin, (req, res) => {
     const type = req.params.type;
-    const logs = getLogs().filter(l => l.action === 'visit' || l.action === 'click');
+    // ★ 只统计 visit 动作，不统计 click
+    const logs = getLogs().filter(l => l.action === 'visit');
     const map = {};
 
     logs.forEach(entry => {
@@ -527,7 +548,8 @@ app.get('/api/visitors/:type', requireLogin, (req, res) => {
 
 // ===== 今日统计 =====
 app.get('/api/stats', requireLogin, (req, res) => {
-    const logs = getLogs().filter(l => l.action === 'visit' || l.action === 'click');
+    // ★ 只统计 visit 动作
+    const logs = getLogs().filter(l => l.action === 'visit');
     const today = new Date().toISOString().slice(0, 10);
     const todayLogs = logs.filter(l => l.time.startsWith(today));
     const ipMap = {};
@@ -550,7 +572,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（精简版）
+// 管理后台页面（添加清空缓存按钮）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -600,13 +622,18 @@ app.get('/admin', (req, res) => {
         }
         .status { margin-left: 10px; font-size: 13px; }
         .status.error { color: #e74c3c; }
+        .btn-clear { background: #f39c12; }
+        .btn-clear:hover { background: #d68910; }
     </style>
 </head>
 <body>
 <div id="app">
     <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px;">
         <h2 style="margin:0;">📋 管理后台</h2>
-        <div><button class="btn btn-danger" onclick="logout()">退出登录</button></div>
+        <div>
+            <button class="btn btn-clear" onclick="clearCache()">🧹 清空缓存</button>
+            <button class="btn btn-danger" onclick="logout()">退出登录</button>
+        </div>
     </div>
 
     <div class="card">
@@ -694,6 +721,23 @@ app.get('/admin', (req, res) => {
         if (!isoString) return '-';
         const date = new Date(isoString);
         return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    }
+
+    // 清空缓存
+    function clearCache() {
+        if (!confirm('确定要清空IP地理缓存吗？这将导致下次访问时重新查询IP信息。')) return;
+        fetch('/api/admin/clear-cache', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert('缓存已清空！');
+                    loadVisitors('blocked');
+                    loadVisitors('unblocked');
+                } else {
+                    alert('清空失败：' + (data.message || '未知错误'));
+                }
+            })
+            .catch(() => alert('请求失败，请检查网络'));
     }
 
     function loadStats() {
