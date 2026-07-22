@@ -14,7 +14,7 @@ const PORT = process.env.PORT || 3000;
 
 // ===== ★ 全部硬编码参数（无需环境变量） =====
 const HUAWEI_APPKEY = '79eb530102574552bbb80e4ec640c9dd';
-const HUAWEI_APPSECRET = '73687ab6144aff8a6d2a238495589e';   // 注意：使用华为云控制台中的正确值
+const HUAWEI_APPSECRET = '73687ab6144a4ff8a6d2a2a38495589e';   // 注意：使用华为云控制台中的正确值
 const IPDATACLOUD_KEY = '75420c4e849e11f1a82800163e167ffb';
 const ALIYUN_APPCODE = 'e5f69ac13b5a492b86693d5e6c4f1a1b';
 
