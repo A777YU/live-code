@@ -12,9 +12,22 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ===== 华为云 API 配置 =====
-const HUAWEI_APPKEY = process.env.HUAWEI_APPKEY || '79eb530102574552bbb80e4ec640c9dd';
-const HUAWEI_APPSECRET = process.env.HUAWEI_APPSECRET || '73687ab6144a4ff8a6d2a2a38495589e';
+// ===== 从环境变量读取所有配置（无硬编码） =====
+const HUAWEI_APPKEY = process.env.HUAWEI_APPKEY;
+const HUAWEI_APPSECRET = process.env.HUAWEI_APPSECRET;
+const IPDATACLOUD_KEY = process.env.IPDATACLOUD_KEY;
+const ALIYUN_APPCODE = process.env.ALIYUN_APPCODE;
+
+// 检查必要的环境变量是否存在
+if (!HUAWEI_APPKEY || !HUAWEI_APPSECRET) {
+    console.warn('[警告] 未设置 HUAWEI_APPKEY 或 HUAWEI_APPSECRET，华为风险检测将不可用');
+}
+if (!IPDATACLOUD_KEY) {
+    console.warn('[警告] 未设置 IPDATACLOUD_KEY，IP666 定位将不可用');
+}
+if (!ALIYUN_APPCODE) {
+    console.warn('[警告] 未设置 ALIYUN_APPCODE，阿里云定位将不可用');
+}
 
 // ===== 数据目录初始化 =====
 const DATA_DIR = path.join(__dirname, 'data');
@@ -105,27 +118,34 @@ function isMatched(list, target) {
     });
 }
 
-// ===== ★ 修正后的华为云签名函数 =====
+// ===== ★ 华为云签名函数（按官方调试工具标准） =====
 function signHuaweiRequest(method, url, body, appKey, appSecret) {
     const parsedUrl = new URL(url);
     const host = parsedUrl.host;
-    const pathname = parsedUrl.pathname;               // 不含查询参数
-    const query = parsedUrl.search ? parsedUrl.search.substring(1) : ''; // 去掉 '?'
+    const pathname = parsedUrl.pathname;
+    const query = parsedUrl.search ? parsedUrl.search.substring(1) : '';
     const xSdkDate = new Date().toISOString().replace(/[:\-.]/g, '').slice(0, 15) + 'Z';
     const bodyHash = crypto.createHash('sha256').update(body || '').digest('hex');
-    const signedHeaders = 'host;x-sdk-date';
-    const canonicalHeaders = `host:${host}\nx-sdk-date:${xSdkDate}\n`;
-    // canonicalRequest 格式：方法\n路径\n查询参数\n规范头部\n签名头\nbody哈希
+
+    // ★★★ 关键：签名头必须包含 host, user-agent, x-sdk-date, x-stage ★★★
+    const signedHeaders = 'host;user-agent;x-sdk-date;x-stage';
+    const userAgent = 'axios/1.6.0';
+    const xStage = 'RELEASE';
+    const canonicalHeaders = `host:${host}\nuser-agent:${userAgent}\nx-sdk-date:${xSdkDate}\nx-stage:${xStage}\n`;
     const canonicalRequest = `${method}\n${pathname}\n${query}\n${canonicalHeaders}\n${signedHeaders}\n${bodyHash}`;
+
     const algorithm = 'SDK-HMAC-SHA256';
     const credentialScope = `${xSdkDate.slice(0, 8)}/apigateway/request`;
     const stringToSign = `${algorithm}\n${xSdkDate}\n${credentialScope}\n${crypto.createHash('sha256').update(canonicalRequest).digest('hex')}`;
     const signingKey = crypto.createHmac('sha256', appSecret).update(xSdkDate.slice(0, 8)).digest();
     const signature = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
     const authorization = `${algorithm} Access=${appKey}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
     return {
         'Host': host,
+        'User-Agent': userAgent,
         'X-Sdk-Date': xSdkDate,
+        'X-Stage': xStage,
         'Authorization': authorization
     };
 }
@@ -133,13 +153,17 @@ function signHuaweiRequest(method, url, body, appKey, appSecret) {
 // ===== 华为风险检测 =====
 async function getHuaweiRisk(ip) {
     console.log(`[华为风险] 开始查询 IP: ${ip}`);
+    // 如果未配置 AppKey 或 AppSecret，直接返回失败
+    if (!HUAWEI_APPKEY || !HUAWEI_APPSECRET) {
+        console.log('[华为风险] 未配置 AppKey/AppSecret，跳过检测');
+        return { success: false, error: '未配置' };
+    }
     try {
         const url = `https://kzipfx.apistore.huaweicloud.com/api-mall/api/ip/portrait?ip=${ip}`;
         const method = 'POST';
         const body = '';
         const headers = signHuaweiRequest(method, url, body, HUAWEI_APPKEY, HUAWEI_APPSECRET);
-        headers['Content-Type'] = 'application/json';
-        console.log(`[华为风险] 请求头:`, { Host: headers.Host, 'X-Sdk-Date': headers['X-Sdk-Date'], Authorization: headers.Authorization.substring(0, 50) + '...' });
+        console.log(`[华为风险] 请求头:`, { Host: headers.Host, 'X-Sdk-Date': headers['X-Sdk-Date'], 'X-Stage': headers['X-Stage'], Authorization: headers.Authorization.substring(0, 50) + '...' });
         const response = await axios({
             method: method,
             url: url,
@@ -174,12 +198,14 @@ async function getHuaweiRisk(ip) {
 const geoCache = {};
 const riskCache = {};
 const CACHE_TTL = 24 * 60 * 60 * 1000;
-const IPDATACLOUD_KEY = process.env.IPDATACLOUD_KEY || '75420c4e849e11f1a82800163e167ffb';
-const ALIYUN_APPCODE = process.env.ALIYUN_APPCODE || 'e5f69ac13b5a492b86693d5e6c4f1a1b';
 
-// ----- 阿里云 -----
+// ----- 阿里云（从环境变量读取） -----
 async function getAliyunGeo(ip) {
     console.log(`[阿里云] 开始查询 IP: ${ip}`);
+    if (!ALIYUN_APPCODE) {
+        console.log('[阿里云] 未配置 AppCode，跳过');
+        return { success: false, error: '未配置' };
+    }
     try {
         const response = await axios.get('https://jisuip.market.alicloudapi.com/ip/location', {
             params: { ip: ip },
@@ -215,9 +241,13 @@ async function getAliyunGeo(ip) {
     }
 }
 
-// ----- IP666（超时 3000ms） -----
+// ----- IP666（从环境变量读取） -----
 async function getIp666Geo(ip) {
     console.log(`[IP666] 开始查询 IP: ${ip}`);
+    if (!IPDATACLOUD_KEY) {
+        console.log('[IP666] 未配置 Key，跳过');
+        return { success: false, error: '未配置' };
+    }
     try {
         const url = 'https://api.ipdatacloud.com/v2/query';
         const response = await axios.get(url, {
@@ -245,7 +275,7 @@ async function getIp666Geo(ip) {
     }
 }
 
-// ----- 备用服务（ip-api.com） -----
+// ----- 备用服务（ip-api.com，免费，无需配置） -----
 async function getBackupGeo(ip) {
     console.log(`[备用服务] 开始查询 IP: ${ip}`);
     try {
@@ -785,7 +815,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（完整版）
+// 管理后台页面（与之前相同，略作修改）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
