@@ -7,11 +7,14 @@ const path = require('path');
 const axios = require('axios');
 const useragent = require('useragent');
 const multer = require('multer');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ===== 硬编码参数 =====
+const HUAWEI_APPKEY = '79eb530102574552bbb80e4ec640c9dd';
+const HUAWEI_APPSECRET = '73687ab6144a4ff8a6d2a2a38495589e';
 const IPDATACLOUD_KEY = '75420c4e849e11f1a82800163e167ffb';
 const ALIYUN_APPCODE = 'e5f69ac13b5a492b86693d5e6c4f1a1b';
 
@@ -27,7 +30,12 @@ const COMPLAINTS_FILE = path.join(DATA_DIR, 'complaints.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(CONFIG_FILE)) {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ url: 'https://example.com/main', fallbackUrl: 'https://example.com/fallback' }));
+    // 初始化配置文件，增加 ipQueryEnabled 字段
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
+        url: 'https://example.com/main',
+        fallbackUrl: 'https://example.com/fallback',
+        ipQueryEnabled: true   // 默认开启
+    }));
 }
 if (!fs.existsSync(LOG_FILE)) fs.writeFileSync(LOG_FILE, JSON.stringify([]));
 if (!fs.existsSync(BLOCKED_FILE)) {
@@ -106,9 +114,80 @@ function isMatched(list, target) {
     });
 }
 
-// ===== IP地理位置（三服务并发，不使用缓存） =====
-const geoCache = {}; // 保留但不使用，可后续用于其他目的
-// 清空缓存功能依然保留，但实际已无缓存读取
+// ===== 华为云签名函数 =====
+function signHuaweiRequest(method, url, body, appKey, appSecret) {
+    const parsedUrl = new URL(url);
+    const host = parsedUrl.host;
+    const pathname = parsedUrl.pathname;
+    const query = parsedUrl.search ? parsedUrl.search.substring(1) : '';
+    const xSdkDate = new Date().toISOString().replace(/[:\-.]/g, '').slice(0, 15) + 'Z';
+    const bodyHash = crypto.createHash('sha256').update(body || '').digest('hex');
+
+    const signedHeaders = 'host;user-agent;x-sdk-date;x-stage';
+    const userAgent = 'axios/1.6.0';
+    const xStage = 'RELEASE';
+    const canonicalHeaders = `host:${host}\nuser-agent:${userAgent}\nx-sdk-date:${xSdkDate}\nx-stage:${xStage}\n`;
+    const canonicalRequest = `${method}\n${pathname}\n${query}\n${canonicalHeaders}\n${signedHeaders}\n${bodyHash}`;
+
+    const algorithm = 'SDK-HMAC-SHA256';
+    const credentialScope = `${xSdkDate.slice(0, 8)}/apigateway/request`;
+    const stringToSign = `${algorithm}\n${xSdkDate}\n${credentialScope}\n${crypto.createHash('sha256').update(canonicalRequest).digest('hex')}`;
+    const signingKey = crypto.createHmac('sha256', appSecret).update(xSdkDate.slice(0, 8)).digest();
+    const signature = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
+    const authorization = `${algorithm} Access=${appKey}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+    return {
+        'Host': host,
+        'User-Agent': userAgent,
+        'X-Sdk-Date': xSdkDate,
+        'X-Stage': xStage,
+        'Authorization': authorization
+    };
+}
+
+// ===== 华为风险检测 =====
+async function getHuaweiRisk(ip) {
+    console.log(`[华为风险] 开始查询 IP: ${ip}`);
+    try {
+        const url = `https://kzipfx.apistore.huaweicloud.com/api-mall/api/ip/portrait?ip=${ip}`;
+        const method = 'POST';
+        const body = '';
+        const headers = signHuaweiRequest(method, url, body, HUAWEI_APPKEY, HUAWEI_APPSECRET);
+        console.log(`[华为风险] 请求头:`, { Host: headers.Host, 'X-Sdk-Date': headers['X-Sdk-Date'], 'X-Stage': headers['X-Stage'] });
+        const response = await axios({
+            method: method,
+            url: url,
+            headers: headers,
+            data: body,
+            timeout: 3000
+        });
+        console.log('[华为风险] 响应状态:', response.status);
+        console.log('[华为风险] 完整响应:', JSON.stringify(response.data));
+        if (response.data && response.data.success && response.data.data) {
+            const data = response.data.data;
+            const tag = data.tag || '';
+            const level = data.level || '无';
+            const score = data.score || 0;
+            console.log(`[华为风险] 查询成功 - tag: "${tag}", level: ${level}, score: ${score}`);
+            return { success: true, data: { tag, level, score } };
+        } else {
+            console.log('[华为风险] 查询失败，响应结构异常:', response.data);
+            return { success: false, error: '响应异常' };
+        }
+    } catch (e) {
+        console.error('[华为风险] 请求失败:', e.message);
+        if (e.response) {
+            console.error('[华为风险] HTTP状态:', e.response.status);
+            console.error('[华为风险] 响应数据:', JSON.stringify(e.response.data));
+        }
+        return { success: false, error: e.message };
+    }
+}
+
+// ===== IP地理位置（三服务并发 + 风险检测） =====
+const geoCache = {};
+const riskCache = {};
+const CACHE_TTL = 24 * 60 * 60 * 1000;
 
 // ----- 阿里云 -----
 async function getAliyunGeo(ip) {
@@ -207,14 +286,37 @@ async function getBackupGeo(ip) {
 
 async function getGeoInfo(ip) {
     const ipv4 = getIPv4(ip);
-    // ★★★ 强制每次重新查询，不使用缓存 ★★★
-    console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息（强制刷新）`);
+    let geoCacheData = geoCache[ipv4] && (Date.now() - geoCache[ipv4].timestamp < CACHE_TTL) ? geoCache[ipv4].data : null;
+    let riskCacheData = riskCache[ipv4] && (Date.now() - riskCache[ipv4].timestamp < CACHE_TTL) ? riskCache[ipv4].data : null;
 
-    const [ip666Result, aliyunResult, backupResult] = await Promise.all([
+    if (geoCacheData && riskCacheData) {
+        console.log(`[Cache] 命中完整缓存 IP: ${ipv4}`);
+        geoCacheData.riskTag = riskCacheData.tag || '';
+        geoCacheData.riskLevel = riskCacheData.level || '无';
+        geoCacheData.riskScore = riskCacheData.score || 0;
+        return geoCacheData;
+    }
+
+    console.log(`[Geo] 开始获取 IP: ${ipv4} 的地理信息和风险检测`);
+    const [ip666Result, aliyunResult, backupResult, riskResult] = await Promise.all([
         getIp666Geo(ipv4),
         getAliyunGeo(ipv4),
-        getBackupGeo(ipv4)
+        getBackupGeo(ipv4),
+        getHuaweiRisk(ipv4)
     ]);
+
+    let riskTag = '';
+    let riskLevel = '无';
+    let riskScore = 0;
+    if (riskResult.success) {
+        riskTag = riskResult.data.tag || '';
+        riskLevel = riskResult.data.level || '无';
+        riskScore = riskResult.data.score || 0;
+        riskCache[ipv4] = { data: { tag: riskTag, level: riskLevel, score: riskScore }, timestamp: Date.now() };
+    } else {
+        riskCache[ipv4] = { data: { tag: '', level: '无', score: 0 }, timestamp: Date.now() };
+        console.log(`[风险] 查询失败，IP: ${ipv4}，不进行风险屏蔽`);
+    }
 
     const services = {
         ip666: ip666Result.success ? ip666Result.data : null,
@@ -238,7 +340,10 @@ async function getGeoInfo(ip) {
             ip666: { success: ip666Result.success, data: services.ip666, error: ip666Result.error || null },
             aliyun: { success: aliyunResult.success, data: services.aliyun, error: aliyunResult.error || null },
             backup: { success: backupResult.success, data: services.backup, error: backupResult.error || null }
-        }
+        },
+        riskTag: riskTag,
+        riskLevel: riskLevel,
+        riskScore: riskScore
     };
 
     if (successCount >= 2) {
@@ -284,7 +389,6 @@ async function getGeoInfo(ip) {
     result.backup = services.backup || null;
 
     console.log('[Geo] 最终结果:', result);
-    // 可选：写入缓存（但不会读取）
     geoCache[ipv4] = { data: result, timestamp: Date.now() };
     return result;
 }
@@ -301,10 +405,15 @@ function isBlocked(ip, geo, blockedList, whitelist) {
     if (blockedList.ips.includes(ipv4) || cityMatch || provinceMatch) return true;
     if (geo.city === '未知' && geo.region === '未知') return true;
     if (!geo.match) return true;
+    const riskTag = geo.riskTag || '';
+    if (riskTag.includes('Proxy') || riskTag.includes('VPN') || riskTag.includes('Sec_Dial')) {
+        console.log(`[屏蔽] IP ${ipv4} 因风险标签 ${riskTag} 被屏蔽`);
+        return true;
+    }
     return false;
 }
 
-// ===== 记录IP日志 =====
+// ===== 记录IP日志（加入开关判断） =====
 async function logIP(ip, action, req) {
     try {
         console.log(`[logIP] 开始记录 - IP: ${ip}, action: ${action}`);
@@ -312,48 +421,70 @@ async function logIP(ip, action, req) {
             console.log(`[logIP] 跳过 admin 路径`);
             return;
         }
+
+        const config = getConfig();
+        const ipQueryEnabled = config.ipQueryEnabled !== undefined ? config.ipQueryEnabled : true;
+
         const logs = getLogs();
         const now = new Date().toISOString();
         const ipv4 = getIPv4(ip);
-        const geo = await getGeoInfo(ipv4);
-        const blockedList = getBlocked();
-        const whitelist = getWhitelist();
 
-        let device = '未知';
-        if (req) {
-            const agent = useragent.parse(req.headers['user-agent'] || '');
-            device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
-        }
-
-        const finalBlocked = isBlocked(ipv4, geo, blockedList, whitelist);
-
-        const compareInfo = {
-            match: geo.match,
-            ip666: geo.ip666,
-            aliyun: geo.aliyun,
-            backup: geo.backup || null,
-            usedBackup: geo.usedBackup || false,
-            services: geo.services || {
-                ip666: { success: false, data: null, error: '未知' },
-                aliyun: { success: false, data: null, error: '未知' },
-                backup: { success: false, data: null, error: '未知' }
-            }
-        };
-
-        const entry = {
+        let entry = {
             ip: ipv4,
             action: action,
             time: now,
-            country: geo.country,
-            region: geo.region,
-            city: geo.city,
-            device: device,
-            blocked: finalBlocked,
-            compare: compareInfo
+            blocked: false, // 默认不屏蔽
+            compare: {}
         };
+
+        if (!ipQueryEnabled) {
+            // 开关关闭：不进行定位，记录简略日志
+            entry.country = '未知';
+            entry.region = '未知';
+            entry.city = '未知';
+            entry.device = '未知';
+            entry.blocked = false; // 始终不屏蔽
+            entry.compare = { match: false, ip666: { region: '服务不可用', city: '服务不可用' }, aliyun: { region: '服务不可用', city: '服务不可用' } };
+            console.log(`[logIP] IP查询已关闭，记录简略日志`);
+        } else {
+            // 开关开启：正常查询定位
+            const geo = await getGeoInfo(ipv4);
+            const blockedList = getBlocked();
+            const whitelist = getWhitelist();
+
+            let device = '未知';
+            if (req) {
+                const agent = useragent.parse(req.headers['user-agent'] || '');
+                device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
+            }
+
+            const finalBlocked = isBlocked(ipv4, geo, blockedList, whitelist);
+
+            entry.country = geo.country;
+            entry.region = geo.region;
+            entry.city = geo.city;
+            entry.device = device;
+            entry.blocked = finalBlocked;
+            entry.compare = {
+                match: geo.match,
+                ip666: geo.ip666,
+                aliyun: geo.aliyun,
+                backup: geo.backup || null,
+                usedBackup: geo.usedBackup || false,
+                services: geo.services || {
+                    ip666: { success: false, data: null, error: '未知' },
+                    aliyun: { success: false, data: null, error: '未知' },
+                    backup: { success: false, data: null, error: '未知' }
+                },
+                riskTag: geo.riskTag || '',
+                riskLevel: geo.riskLevel || '无',
+                riskScore: geo.riskScore || 0
+            };
+            console.log(`[logIP] 记录已保存 - IP: ${ipv4}, blocked: ${finalBlocked}`);
+        }
+
         logs.push(entry);
         saveLogs(logs);
-        console.log(`[logIP] 记录已保存 - IP: ${ipv4}, blocked: ${finalBlocked}`);
     } catch (err) {
         console.error('[logIP] 记录日志时发生异常:', err);
     }
@@ -427,13 +558,26 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // ============================================
 
 app.get('/api/config', async (req, res) => {
+    const config = getConfig();
+    const ipQueryEnabled = config.ipQueryEnabled !== undefined ? config.ipQueryEnabled : true;
+
+    if (!ipQueryEnabled) {
+        // 开关关闭：直接返回未屏蔽，不记录click，不查询定位
+        console.log('[api/config] IP查询已关闭，返回未屏蔽');
+        return res.json({
+            url: config.url,
+            fallbackUrl: config.fallbackUrl || 'https://example.com/fallback',
+            blocked: false
+        });
+    }
+
+    // 开关开启：正常流程
     const ip = getClientIP(req);
     const referer = req.headers.referer || '';
     if (!referer.includes('/admin')) {
         await logIP(ip, 'click', req);
     }
 
-    const config = getConfig();
     const ipv4 = getIPv4(ip);
     const geo = await getGeoInfo(ipv4);
     const blockedList = getBlocked();
@@ -496,16 +640,32 @@ function requireLogin(req, res, next) {
     }
 }
 
+// ===== 测试风险检测接口 =====
+app.get('/api/test-risk/:ip', requireLogin, async (req, res) => {
+    const testIp = req.params.ip;
+    if (!testIp || !/^(\d{1,3}\.){3}\d{1,3}$/.test(testIp)) {
+        return res.status(400).json({ success: false, error: 'IP格式无效' });
+    }
+    const result = await getHuaweiRisk(testIp);
+    res.json({
+        ip: testIp,
+        success: result.success,
+        data: result.success ? result.data : null,
+        error: result.success ? null : result.error
+    });
+});
+
 // 配置管理
 app.get('/api/config', requireLogin, (req, res) => {
     res.json(getConfig());
 });
 app.post('/api/config', requireLogin, (req, res) => {
-    const { url, fallbackUrl } = req.body;
+    const { url, fallbackUrl, ipQueryEnabled } = req.body;
     if (!url) return res.status(400).json({ success: false, message: '缺少主链接' });
     const config = getConfig();
     config.url = url;
     if (fallbackUrl !== undefined) config.fallbackUrl = fallbackUrl;
+    if (ipQueryEnabled !== undefined) config.ipQueryEnabled = ipQueryEnabled;
     saveConfig(config);
     res.json({ success: true });
 });
@@ -593,12 +753,14 @@ app.get('/api/complaints', requireLogin, (req, res) => {
     res.json(getComplaints());
 });
 
-// ===== 清空缓存（保留但不实际影响，因为已不使用缓存） =====
+// ===== 清空缓存 =====
 app.post('/api/clear-cache', requireLogin, (req, res) => {
-    const keys = Object.keys(geoCache);
-    keys.forEach(key => delete geoCache[key]);
-    console.log(`[clear-cache] 已清空 ${keys.length} 条缓存（但系统不再读取缓存）`);
-    res.json({ success: true, cleared: keys.length });
+    const geoKeys = Object.keys(geoCache);
+    geoKeys.forEach(key => delete geoCache[key]);
+    const riskKeys = Object.keys(riskCache);
+    riskKeys.forEach(key => delete riskCache[key]);
+    console.log(`[clear-cache] 已清空 ${geoKeys.length} 条地理缓存，${riskKeys.length} 条风险缓存`);
+    res.json({ success: true, cleared: geoKeys.length + riskKeys.length });
 });
 
 // ===== 访客统计 =====
@@ -615,7 +777,7 @@ app.get('/api/visitors/:type', requireLogin, (req, res) => {
                 country: entry.country,
                 region: entry.region,
                 city: entry.city,
-                compare: entry.compare || { match: false, ip666: {}, aliyun: {}, backup: null, usedBackup: false, services: {} },
+                compare: entry.compare || { match: false, ip666: {}, aliyun: {}, backup: null, usedBackup: false, services: {}, riskTag: '', riskLevel: '无', riskScore: 0 },
                 device: entry.device || '未知',
                 firstTime: entry.time,
                 lastTime: entry.time,
@@ -661,7 +823,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（完整）
+// 管理后台页面（增加开关）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -716,8 +878,21 @@ app.get('/admin', (req, res) => {
         .service-success { background: #d4edda; color: #155724; }
         .service-fail { background: #f8d7da; color: #721c24; }
         .backup-tag { background: #ffc107; color: #000; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 4px; }
+        .risk-tag { background: #f44336; color: #fff; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 4px; }
         .complaint-item { border-bottom: 1px solid #eee; padding: 6px 0; font-size: 12px; }
         .complaint-item img { max-width: 80px; max-height: 80px; border-radius: 4px; margin-top: 4px; }
+        .test-risk-area { margin-top: 12px; padding: 12px; background: #f8f9fa; border-radius: 8px; }
+        .test-risk-area input { width: 150px; }
+        .test-risk-area .btn { margin-left: 8px; }
+        .test-result { margin-top: 8px; font-size: 13px; }
+        /* 开关样式 */
+        .toggle-container { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+        .toggle { position: relative; width: 48px; height: 26px; background: #ccc; border-radius: 13px; cursor: pointer; transition: background 0.3s; }
+        .toggle.active { background: #1a3a6a; }
+        .toggle .slider { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; background: #fff; border-radius: 50%; transition: transform 0.3s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+        .toggle.active .slider { transform: translateX(22px); }
+        .toggle-label { font-size: 14px; color: #1a3a5c; font-weight: 500; }
+        .toggle-status { font-size: 13px; color: #6b7a8f; margin-left: 4px; }
     </style>
 </head>
 <body>
@@ -738,6 +913,27 @@ app.get('/admin', (req, res) => {
             <button class="btn" onclick="clearCache()">🗑️ 清空 IP 缓存</button>
             <span id="clearStatus" style="margin-left:10px;font-size:13px;"></span>
         </div>
+        <div class="test-risk-area">
+            <strong>风险检测测试工具</strong>
+            <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                <input type="text" id="testIpInput" placeholder="输入IP地址" style="width:150px;" />
+                <button class="btn btn-sm" onclick="testRisk()">检测风险</button>
+                <span id="testResult" class="test-result"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ★ 新增：IP查询开关 -->
+    <div class="card">
+        <h3>⚙️ 系统控制</h3>
+        <div class="toggle-container">
+            <div class="toggle" id="ipToggle" onclick="toggleIpQuery()">
+                <div class="slider"></div>
+            </div>
+            <span class="toggle-label">启用 IP 定位与屏蔽</span>
+            <span class="toggle-status" id="toggleStatus">(已开启)</span>
+        </div>
+        <p style="font-size:12px;color:#888;margin-top:6px;">关闭后，所有用户直接跳转主链接，不进行任何IP查询和屏蔽判断，加载速度更快。</p>
     </div>
 
     <div class="card">
@@ -779,13 +975,14 @@ app.get('/admin', (req, res) => {
                         <th>IP</th>
                         <th>定位对比 & 服务状态</th>
                         <th>省份</th>
+                        <th>风险标签</th>
                         <th>设备</th>
                         <th>进入次数</th>
                         <th>首次时间(北京)</th>
                         <th>最近时间(北京)</th>
                     </tr>
                 </thead>
-                <tbody id="blockedVisitorBody"><tr><td colspan="7">加载中...</td></tr></tbody>
+                <tbody id="blockedVisitorBody"><tr><td colspan="8">加载中...</td></tr></tbody>
             </table>
         </div>
     </div>
@@ -799,13 +996,14 @@ app.get('/admin', (req, res) => {
                         <th>IP</th>
                         <th>定位对比 & 服务状态</th>
                         <th>省份</th>
+                        <th>风险标签</th>
                         <th>设备</th>
                         <th>进入次数</th>
                         <th>首次时间(北京)</th>
                         <th>最近时间(北京)</th>
                     </tr>
                 </thead>
-                <tbody id="unblockedVisitorBody"><tr><td colspan="7">加载中...</td></tr></tbody>
+                <tbody id="unblockedVisitorBody"><tr><td colspan="8">加载中...</td></tr></tbody>
             </table>
         </div>
     </div>
@@ -836,6 +1034,17 @@ app.get('/admin', (req, res) => {
             document.getElementById('currentUrl').textContent = '主链接：'+d.url+' | 备用链接：'+d.fallbackUrl;
             document.getElementById('urlInput').value = d.url;
             document.getElementById('fallbackUrlInput').value = d.fallbackUrl||'';
+            // 更新开关状态
+            const enabled = d.ipQueryEnabled !== undefined ? d.ipQueryEnabled : true;
+            const toggle = document.getElementById('ipToggle');
+            const status = document.getElementById('toggleStatus');
+            if (enabled) {
+                toggle.classList.add('active');
+                status.textContent = '(已开启)';
+            } else {
+                toggle.classList.remove('active');
+                status.textContent = '(已关闭)';
+            }
         });
     }
 
@@ -843,11 +1052,45 @@ app.get('/admin', (req, res) => {
         const url = document.getElementById('urlInput').value.trim();
         const fallbackUrl = document.getElementById('fallbackUrlInput').value.trim();
         if(!url){ alert('请输入主链接'); return; }
-        fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, fallbackUrl }) })
+        // 获取当前开关状态
+        const toggle = document.getElementById('ipToggle');
+        const ipQueryEnabled = toggle.classList.contains('active');
+        fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, fallbackUrl, ipQueryEnabled }) })
         .then(r=>r.json()).then(d=>{
             const status = document.getElementById('urlStatus');
             if(d.success){ status.textContent='✅ 更新成功'; status.className='status'; loadConfig(); }
             else{ status.textContent='❌ '+d.message; status.className='status error'; }
+        });
+    }
+
+    // 切换开关
+    function toggleIpQuery() {
+        const toggle = document.getElementById('ipToggle');
+        const status = document.getElementById('toggleStatus');
+        const newState = !toggle.classList.contains('active');
+        if (newState) {
+            toggle.classList.add('active');
+            status.textContent = '(已开启)';
+        } else {
+            toggle.classList.remove('active');
+            status.textContent = '(已关闭)';
+        }
+        // 自动保存配置
+        const url = document.getElementById('urlInput').value.trim();
+        const fallbackUrl = document.getElementById('fallbackUrlInput').value.trim();
+        fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, fallbackUrl, ipQueryEnabled: newState }) })
+        .then(r=>r.json()).then(d=>{
+            if(!d.success) {
+                alert('保存开关状态失败，请重试');
+                // 回滚
+                if (newState) {
+                    toggle.classList.remove('active');
+                    status.textContent = '(已关闭)';
+                } else {
+                    toggle.classList.add('active');
+                    status.textContent = '(已开启)';
+                }
+            }
         });
     }
 
@@ -905,7 +1148,7 @@ app.get('/admin', (req, res) => {
             .then(data => {
                 const tbody = document.getElementById(tbodyId);
                 if (!data || data.length === 0) {
-                    tbody.innerHTML = \`<tr><td colspan="7">暂无数据</td></tr>\`;
+                    tbody.innerHTML = \`<tr><td colspan="8">暂无数据</td></tr>\`;
                     return;
                 }
                 tbody.innerHTML = data.map(item => {
@@ -920,6 +1163,9 @@ app.get('/admin', (req, res) => {
                     const aliyunData = services.aliyun && services.aliyun.data ? \`\${services.aliyun.data.city}(\${services.aliyun.data.region})\` : '不可用';
                     const backupData = services.backup && services.backup.data ? \`\${services.backup.data.city}(\${services.backup.data.region})\` : '不可用';
                     const usedBackup = compare.usedBackup || false;
+                    const riskTag = compare.riskTag || '';
+                    const riskLevel = compare.riskLevel || '无';
+                    let riskDisplay = riskTag ? \`<span class="risk-tag">\${riskTag}</span> (等级:\${riskLevel})\` : '无';
 
                     let compareDisplay = \`
                         <span class="compare-badge \${badgeClass}">\${matchText}</span><br>
@@ -935,6 +1181,7 @@ app.get('/admin', (req, res) => {
                             <td>\${item.ip}</td>
                             <td>\${compareDisplay}</td>
                             <td>\${item.region}</td>
+                            <td>\${riskDisplay}</td>
                             <td>\${item.device || '未知'}</td>
                             <td>\${item.count}</td>
                             <td>\${formatBeijingTime(item.firstTime)}</td>
@@ -944,7 +1191,7 @@ app.get('/admin', (req, res) => {
                 }).join('');
             })
             .catch(() => {
-                document.getElementById(tbodyId).innerHTML = '<tr><td colspan="7">加载失败</td></tr>';
+                document.getElementById(tbodyId).innerHTML = '<tr><td colspan="8">加载失败</td></tr>';
             });
     }
 
@@ -972,7 +1219,7 @@ app.get('/admin', (req, res) => {
     }
 
     function clearCache() {
-        if(!confirm('确定清空 IP 缓存吗？页面将刷新以应用最新数据。')) return;
+        if(!confirm('确定清空 IP 缓存（包含风险缓存）吗？页面将刷新以应用最新数据。')) return;
         fetch('/api/clear-cache', { method:'POST' })
             .then(r=>r.json())
             .then(d=>{
@@ -989,6 +1236,48 @@ app.get('/admin', (req, res) => {
             .catch(()=>{
                 document.getElementById('clearStatus').textContent = '❌ 请求失败';
                 document.getElementById('clearStatus').style.color = '#721c24';
+            });
+    }
+
+    function testRisk() {
+        const ip = document.getElementById('testIpInput').value.trim();
+        if (!ip) {
+            document.getElementById('testResult').textContent = '⚠️ 请输入IP地址';
+            document.getElementById('testResult').style.color = '#e17055';
+            return;
+        }
+        if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+            document.getElementById('testResult').textContent = '⚠️ IP格式无效';
+            document.getElementById('testResult').style.color = '#e17055';
+            return;
+        }
+        document.getElementById('testResult').textContent = '查询中...';
+        document.getElementById('testResult').style.color = '#6b7a8f';
+        fetch('/api/test-risk/' + ip)
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    const tag = data.data.tag || '无';
+                    const level = data.data.level || '无';
+                    const score = data.data.score || 0;
+                    let msg = \`✅ 标签: \${tag}，等级: \${level}，分数: \${score}\`;
+                    if (tag.includes('Proxy') || tag.includes('VPN') || tag.includes('Sec_Dial')) {
+                        msg += ' 🔴 将被屏蔽';
+                    } else if (tag) {
+                        msg += ' ⚪ 忽略（非代理/VPN/秒拨）';
+                    } else {
+                        msg += ' 🟢 无风险';
+                    }
+                    document.getElementById('testResult').textContent = msg;
+                    document.getElementById('testResult').style.color = '#1a3a5c';
+                } else {
+                    document.getElementById('testResult').textContent = '❌ 查询失败: ' + (data.error || '未知错误');
+                    document.getElementById('testResult').style.color = '#e17055';
+                }
+            })
+            .catch(err => {
+                document.getElementById('testResult').textContent = '❌ 网络错误';
+                document.getElementById('testResult').style.color = '#e17055';
             });
     }
 
