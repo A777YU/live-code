@@ -30,11 +30,10 @@ const COMPLAINTS_FILE = path.join(DATA_DIR, 'complaints.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 if (!fs.existsSync(CONFIG_FILE)) {
-    // 初始化配置文件，增加 ipQueryEnabled 字段
     fs.writeFileSync(CONFIG_FILE, JSON.stringify({
         url: 'https://example.com/main',
         fallbackUrl: 'https://example.com/fallback',
-        ipQueryEnabled: true   // 默认开启
+        ipQueryEnabled: true
     }));
 }
 if (!fs.existsSync(LOG_FILE)) fs.writeFileSync(LOG_FILE, JSON.stringify([]));
@@ -413,7 +412,7 @@ function isBlocked(ip, geo, blockedList, whitelist) {
     return false;
 }
 
-// ===== 记录IP日志（加入开关判断） =====
+// ===== 记录IP日志（如果开关关闭，直接返回，不记录任何日志） =====
 async function logIP(ip, action, req) {
     try {
         console.log(`[logIP] 开始记录 - IP: ${ip}, action: ${action}`);
@@ -425,47 +424,38 @@ async function logIP(ip, action, req) {
         const config = getConfig();
         const ipQueryEnabled = config.ipQueryEnabled !== undefined ? config.ipQueryEnabled : true;
 
+        // ★ 如果开关关闭，直接返回，不记录任何日志 ★
+        if (!ipQueryEnabled) {
+            console.log(`[logIP] IP查询已关闭，跳过日志记录`);
+            return;
+        }
+
+        // 开关开启：正常查询定位
         const logs = getLogs();
         const now = new Date().toISOString();
         const ipv4 = getIPv4(ip);
+        const geo = await getGeoInfo(ipv4);
+        const blockedList = getBlocked();
+        const whitelist = getWhitelist();
 
-        let entry = {
+        let device = '未知';
+        if (req) {
+            const agent = useragent.parse(req.headers['user-agent'] || '');
+            device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
+        }
+
+        const finalBlocked = isBlocked(ipv4, geo, blockedList, whitelist);
+
+        const entry = {
             ip: ipv4,
             action: action,
             time: now,
-            blocked: false, // 默认不屏蔽
-            compare: {}
-        };
-
-        if (!ipQueryEnabled) {
-            // 开关关闭：不进行定位，记录简略日志
-            entry.country = '未知';
-            entry.region = '未知';
-            entry.city = '未知';
-            entry.device = '未知';
-            entry.blocked = false; // 始终不屏蔽
-            entry.compare = { match: false, ip666: { region: '服务不可用', city: '服务不可用' }, aliyun: { region: '服务不可用', city: '服务不可用' } };
-            console.log(`[logIP] IP查询已关闭，记录简略日志`);
-        } else {
-            // 开关开启：正常查询定位
-            const geo = await getGeoInfo(ipv4);
-            const blockedList = getBlocked();
-            const whitelist = getWhitelist();
-
-            let device = '未知';
-            if (req) {
-                const agent = useragent.parse(req.headers['user-agent'] || '');
-                device = `${agent.family} ${agent.major}.${agent.minor} / ${agent.os.family} ${agent.os.major}`.trim() || '未知';
-            }
-
-            const finalBlocked = isBlocked(ipv4, geo, blockedList, whitelist);
-
-            entry.country = geo.country;
-            entry.region = geo.region;
-            entry.city = geo.city;
-            entry.device = device;
-            entry.blocked = finalBlocked;
-            entry.compare = {
+            country: geo.country,
+            region: geo.region,
+            city: geo.city,
+            device: device,
+            blocked: finalBlocked,
+            compare: {
                 match: geo.match,
                 ip666: geo.ip666,
                 aliyun: geo.aliyun,
@@ -479,12 +469,11 @@ async function logIP(ip, action, req) {
                 riskTag: geo.riskTag || '',
                 riskLevel: geo.riskLevel || '无',
                 riskScore: geo.riskScore || 0
-            };
-            console.log(`[logIP] 记录已保存 - IP: ${ipv4}, blocked: ${finalBlocked}`);
-        }
-
+            }
+        };
         logs.push(entry);
         saveLogs(logs);
+        console.log(`[logIP] 记录已保存 - IP: ${ipv4}, blocked: ${finalBlocked}`);
     } catch (err) {
         console.error('[logIP] 记录日志时发生异常:', err);
     }
@@ -567,7 +556,8 @@ app.get('/api/config', async (req, res) => {
         return res.json({
             url: config.url,
             fallbackUrl: config.fallbackUrl || 'https://example.com/fallback',
-            blocked: false
+            blocked: false,
+            ipQueryEnabled: false
         });
     }
 
@@ -588,7 +578,8 @@ app.get('/api/config', async (req, res) => {
     res.json({
         url: config.url,
         fallbackUrl: config.fallbackUrl || 'https://example.com/fallback',
-        blocked: isBlockedResult
+        blocked: isBlockedResult,
+        ipQueryEnabled: true
     });
 });
 
@@ -823,7 +814,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（增加开关）
+// 管理后台页面（修改：开关关闭时隐藏实时数据）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -885,7 +876,6 @@ app.get('/admin', (req, res) => {
         .test-risk-area input { width: 150px; }
         .test-risk-area .btn { margin-left: 8px; }
         .test-result { margin-top: 8px; font-size: 13px; }
-        /* 开关样式 */
         .toggle-container { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
         .toggle { position: relative; width: 48px; height: 26px; background: #ccc; border-radius: 13px; cursor: pointer; transition: background 0.3s; }
         .toggle.active { background: #1a3a6a; }
@@ -893,6 +883,7 @@ app.get('/admin', (req, res) => {
         .toggle.active .slider { transform: translateX(22px); }
         .toggle-label { font-size: 14px; color: #1a3a5c; font-weight: 500; }
         .toggle-status { font-size: 13px; color: #6b7a8f; margin-left: 4px; }
+        .offline-notice { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px 14px; border-radius: 6px; margin: 8px 0; color: #856404; }
     </style>
 </head>
 <body>
@@ -904,10 +895,12 @@ app.get('/admin', (req, res) => {
 
     <div class="card">
         <h3>📊 今日统计</h3>
-        <div class="stats-grid">
-            <div class="stat-item"><div class="number" id="totalVisits">0</div><div class="label">总访客</div></div>
-            <div class="stat-item"><div class="number" id="blockedVisits">0</div><div class="label">已屏蔽</div></div>
-            <div class="stat-item"><div class="number" id="unblockedVisits">0</div><div class="label">未屏蔽</div></div>
+        <div id="statsContainer">
+            <div class="stats-grid">
+                <div class="stat-item"><div class="number" id="totalVisits">0</div><div class="label">总访客</div></div>
+                <div class="stat-item"><div class="number" id="blockedVisits">0</div><div class="label">已屏蔽</div></div>
+                <div class="stat-item"><div class="number" id="unblockedVisits">0</div><div class="label">未屏蔽</div></div>
+            </div>
         </div>
         <div class="cache-btn">
             <button class="btn" onclick="clearCache()">🗑️ 清空 IP 缓存</button>
@@ -923,7 +916,7 @@ app.get('/admin', (req, res) => {
         </div>
     </div>
 
-    <!-- ★ 新增：IP查询开关 -->
+    <!-- ★ 系统控制 -->
     <div class="card">
         <h3>⚙️ 系统控制</h3>
         <div class="toggle-container">
@@ -966,45 +959,58 @@ app.get('/admin', (req, res) => {
         </div>
     </div>
 
-    <div class="card">
-        <h3>🚫 被屏蔽用户详情</h3>
-        <div class="scrollable">
-            <table class="log-table">
-                <thead>
-                    <tr>
-                        <th>IP</th>
-                        <th>定位对比 & 服务状态</th>
-                        <th>省份</th>
-                        <th>风险标签</th>
-                        <th>设备</th>
-                        <th>进入次数</th>
-                        <th>首次时间(北京)</th>
-                        <th>最近时间(北京)</th>
-                    </tr>
-                </thead>
-                <tbody id="blockedVisitorBody"><tr><td colspan="8">加载中...</td></tr></tbody>
-            </table>
+    <!-- ★ 访客详情区域，增加提示 -->
+    <div id="visitorSections">
+        <div class="card">
+            <h3>🚫 被屏蔽用户详情</h3>
+            <div id="blockedVisitorContainer">
+                <div class="scrollable">
+                    <table class="log-table">
+                        <thead>
+                            <tr>
+                                <th>IP</th>
+                                <th>定位对比 & 服务状态</th>
+                                <th>省份</th>
+                                <th>风险标签</th>
+                                <th>设备</th>
+                                <th>进入次数</th>
+                                <th>首次时间(北京)</th>
+                                <th>最近时间(北京)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="blockedVisitorBody"><tr><td colspan="8">加载中...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="blockedOfflineNotice" style="display:none;" class="offline-notice">
+                ⚠️ IP查询已关闭，无实时数据。以下显示的是历史记录（如有）。
+            </div>
         </div>
-    </div>
 
-    <div class="card">
-        <h3>✅ 未屏蔽用户详情</h3>
-        <div class="scrollable">
-            <table class="log-table">
-                <thead>
-                    <tr>
-                        <th>IP</th>
-                        <th>定位对比 & 服务状态</th>
-                        <th>省份</th>
-                        <th>风险标签</th>
-                        <th>设备</th>
-                        <th>进入次数</th>
-                        <th>首次时间(北京)</th>
-                        <th>最近时间(北京)</th>
-                    </tr>
-                </thead>
-                <tbody id="unblockedVisitorBody"><tr><td colspan="8">加载中...</td></tr></tbody>
-            </table>
+        <div class="card">
+            <h3>✅ 未屏蔽用户详情</h3>
+            <div id="unblockedVisitorContainer">
+                <div class="scrollable">
+                    <table class="log-table">
+                        <thead>
+                            <tr>
+                                <th>IP</th>
+                                <th>定位对比 & 服务状态</th>
+                                <th>省份</th>
+                                <th>风险标签</th>
+                                <th>设备</th>
+                                <th>进入次数</th>
+                                <th>首次时间(北京)</th>
+                                <th>最近时间(北京)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="unblockedVisitorBody"><tr><td colspan="8">加载中...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="unblockedOfflineNotice" style="display:none;" class="offline-notice">
+                ⚠️ IP查询已关闭，无实时数据。以下显示的是历史记录（如有）。
+            </div>
         </div>
     </div>
 
@@ -1015,6 +1021,9 @@ app.get('/admin', (req, res) => {
 </div>
 
 <script>
+    // 存储开关状态
+    let ipQueryEnabled = true;
+
     function formatBeijingTime(isoString) {
         if (!isoString) return '-';
         const date = new Date(isoString);
@@ -1022,6 +1031,18 @@ app.get('/admin', (req, res) => {
     }
 
     function loadStats() {
+        if (!ipQueryEnabled) {
+            // 开关关闭时，显示提示，不请求数据
+            document.getElementById('statsContainer').innerHTML = `
+                <div class="offline-notice">⚠️ IP查询已关闭，无实时统计数据</div>
+                <div class="stats-grid">
+                    <div class="stat-item"><div class="number">-</div><div class="label">总访客</div></div>
+                    <div class="stat-item"><div class="number">-</div><div class="label">已屏蔽</div></div>
+                    <div class="stat-item"><div class="number">-</div><div class="label">未屏蔽</div></div>
+                </div>
+            `;
+            return;
+        }
         fetch('/api/stats').then(r=>r.json()).then(d=>{
             document.getElementById('totalVisits').textContent = d.total || 0;
             document.getElementById('blockedVisits').textContent = d.blocked || 0;
@@ -1035,27 +1056,48 @@ app.get('/admin', (req, res) => {
             document.getElementById('urlInput').value = d.url;
             document.getElementById('fallbackUrlInput').value = d.fallbackUrl||'';
             // 更新开关状态
-            const enabled = d.ipQueryEnabled !== undefined ? d.ipQueryEnabled : true;
+            ipQueryEnabled = d.ipQueryEnabled !== undefined ? d.ipQueryEnabled : true;
             const toggle = document.getElementById('ipToggle');
             const status = document.getElementById('toggleStatus');
-            if (enabled) {
+            if (ipQueryEnabled) {
                 toggle.classList.add('active');
                 status.textContent = '(已开启)';
             } else {
                 toggle.classList.remove('active');
                 status.textContent = '(已关闭)';
             }
+            // 根据开关状态控制访客详情区域的显示
+            updateVisitorVisibility();
+            // 重新加载统计和访客列表（会判断开关状态）
+            loadStats();
+            loadVisitors('blocked');
+            loadVisitors('unblocked');
         });
+    }
+
+    function updateVisitorVisibility() {
+        const blockedNotice = document.getElementById('blockedOfflineNotice');
+        const unblockedNotice = document.getElementById('unblockedOfflineNotice');
+        if (ipQueryEnabled) {
+            blockedNotice.style.display = 'none';
+            unblockedNotice.style.display = 'none';
+            document.getElementById('blockedVisitorContainer').style.display = 'block';
+            document.getElementById('unblockedVisitorContainer').style.display = 'block';
+        } else {
+            blockedNotice.style.display = 'block';
+            unblockedNotice.style.display = 'block';
+            document.getElementById('blockedVisitorContainer').style.display = 'block'; // 仍显示但表格内容会显示历史数据
+            document.getElementById('unblockedVisitorContainer').style.display = 'block';
+        }
     }
 
     function updateUrl() {
         const url = document.getElementById('urlInput').value.trim();
         const fallbackUrl = document.getElementById('fallbackUrlInput').value.trim();
         if(!url){ alert('请输入主链接'); return; }
-        // 获取当前开关状态
         const toggle = document.getElementById('ipToggle');
-        const ipQueryEnabled = toggle.classList.contains('active');
-        fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, fallbackUrl, ipQueryEnabled }) })
+        const ipQueryEnabledState = toggle.classList.contains('active');
+        fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, fallbackUrl, ipQueryEnabled: ipQueryEnabledState }) })
         .then(r=>r.json()).then(d=>{
             const status = document.getElementById('urlStatus');
             if(d.success){ status.textContent='✅ 更新成功'; status.className='status'; loadConfig(); }
@@ -1063,7 +1105,6 @@ app.get('/admin', (req, res) => {
         });
     }
 
-    // 切换开关
     function toggleIpQuery() {
         const toggle = document.getElementById('ipToggle');
         const status = document.getElementById('toggleStatus');
@@ -1075,7 +1116,7 @@ app.get('/admin', (req, res) => {
             toggle.classList.remove('active');
             status.textContent = '(已关闭)';
         }
-        // 自动保存配置
+        // 保存配置
         const url = document.getElementById('urlInput').value.trim();
         const fallbackUrl = document.getElementById('fallbackUrlInput').value.trim();
         fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, fallbackUrl, ipQueryEnabled: newState }) })
@@ -1090,6 +1131,12 @@ app.get('/admin', (req, res) => {
                     toggle.classList.add('active');
                     status.textContent = '(已开启)';
                 }
+            } else {
+                ipQueryEnabled = newState;
+                updateVisitorVisibility();
+                loadStats(); // 刷新统计
+                loadVisitors('blocked');
+                loadVisitors('unblocked');
             }
         });
     }
@@ -1141,14 +1188,23 @@ app.get('/admin', (req, res) => {
     }
 
     function loadVisitors(type) {
-        const endpoint = type === 'blocked' ? '/api/visitors/blocked' : '/api/visitors/unblocked';
+        // 如果开关关闭，显示提示，不请求数据（但历史数据仍然显示，因为表格内已有内容，但我们要清空并显示提示）
         const tbodyId = type === 'blocked' ? 'blockedVisitorBody' : 'unblockedVisitorBody';
+        const containerId = type === 'blocked' ? 'blockedVisitorContainer' : 'unblockedVisitorContainer';
+        if (!ipQueryEnabled) {
+            // 显示“无实时数据”占位，但不清除历史记录，我们会在页面加载时通过 loadConfig 控制显示提示，但表格仍显示历史数据（如果有）。
+            // 为了清晰，我们保留表格但显示提示，所以我们不修改表格内容，让历史数据仍然显示。
+            // 但为了不让用户混淆，我们可以清空表格并显示提示信息。
+            document.getElementById(tbodyId).innerHTML = `<tr><td colspan="8" style="text-align:center;color:#6b7a8f;">IP查询已关闭，无实时数据</td></tr>`;
+            return;
+        }
+        const endpoint = type === 'blocked' ? '/api/visitors/blocked' : '/api/visitors/unblocked';
         fetch(endpoint)
             .then(r => r.json())
             .then(data => {
                 const tbody = document.getElementById(tbodyId);
                 if (!data || data.length === 0) {
-                    tbody.innerHTML = \`<tr><td colspan="8">暂无数据</td></tr>\`;
+                    tbody.innerHTML = `<tr><td colspan="8">暂无数据</td></tr>`;
                     return;
                 }
                 tbody.innerHTML = data.map(item => {
@@ -1285,19 +1341,20 @@ app.get('/admin', (req, res) => {
         fetch('/admin/logout', { method:'POST' }).then(()=>{ location.reload(); });
     }
 
-    loadStats();
+    // 初始化加载
     loadConfig();
     loadBlocked();
     loadWhitelist();
-    loadVisitors('blocked');
-    loadVisitors('unblocked');
     loadComplaints();
 
+    // 定时刷新（仅当开关开启时刷新）
     setInterval(() => {
-        loadStats();
-        loadVisitors('blocked');
-        loadVisitors('unblocked');
-        loadComplaints();
+        if (ipQueryEnabled) {
+            loadStats();
+            loadVisitors('blocked');
+            loadVisitors('unblocked');
+            loadComplaints();
+        }
     }, 30000);
 </script>
 </body>
