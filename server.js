@@ -424,13 +424,11 @@ async function logIP(ip, action, req) {
         const config = getConfig();
         const ipQueryEnabled = config.ipQueryEnabled !== undefined ? config.ipQueryEnabled : true;
 
-        // ★ 如果开关关闭，直接返回，不记录任何日志 ★
         if (!ipQueryEnabled) {
             console.log(`[logIP] IP查询已关闭，跳过日志记录`);
             return;
         }
 
-        // 开关开启：正常查询定位
         const logs = getLogs();
         const now = new Date().toISOString();
         const ipv4 = getIPv4(ip);
@@ -551,7 +549,6 @@ app.get('/api/config', async (req, res) => {
     const ipQueryEnabled = config.ipQueryEnabled !== undefined ? config.ipQueryEnabled : true;
 
     if (!ipQueryEnabled) {
-        // 开关关闭：直接返回未屏蔽，不记录click，不查询定位
         console.log('[api/config] IP查询已关闭，返回未屏蔽');
         return res.json({
             url: config.url,
@@ -561,7 +558,6 @@ app.get('/api/config', async (req, res) => {
         });
     }
 
-    // 开关开启：正常流程
     const ip = getClientIP(req);
     const referer = req.headers.referer || '';
     if (!referer.includes('/admin')) {
@@ -814,7 +810,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（修改：开关关闭时隐藏实时数据）
+// 管理后台页面（修复语法错误）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -916,7 +912,6 @@ app.get('/admin', (req, res) => {
         </div>
     </div>
 
-    <!-- ★ 系统控制 -->
     <div class="card">
         <h3>⚙️ 系统控制</h3>
         <div class="toggle-container">
@@ -959,7 +954,6 @@ app.get('/admin', (req, res) => {
         </div>
     </div>
 
-    <!-- ★ 访客详情区域，增加提示 -->
     <div id="visitorSections">
         <div class="card">
             <h3>🚫 被屏蔽用户详情</h3>
@@ -1032,15 +1026,13 @@ app.get('/admin', (req, res) => {
 
     function loadStats() {
         if (!ipQueryEnabled) {
-            // 开关关闭时，显示提示，不请求数据
-            document.getElementById('statsContainer').innerHTML = `
-                <div class="offline-notice">⚠️ IP查询已关闭，无实时统计数据</div>
-                <div class="stats-grid">
-                    <div class="stat-item"><div class="number">-</div><div class="label">总访客</div></div>
-                    <div class="stat-item"><div class="number">-</div><div class="label">已屏蔽</div></div>
-                    <div class="stat-item"><div class="number">-</div><div class="label">未屏蔽</div></div>
-                </div>
-            `;
+            // ★ 修复：使用普通字符串拼接，避免模板字符串嵌套 ★
+            document.getElementById('statsContainer').innerHTML = '<div class="offline-notice">IP查询已关闭，无实时统计数据</div>' +
+                '<div class="stats-grid">' +
+                '<div class="stat-item"><div class="number">-</div><div class="label">总访客</div></div>' +
+                '<div class="stat-item"><div class="number">-</div><div class="label">已屏蔽</div></div>' +
+                '<div class="stat-item"><div class="number">-</div><div class="label">未屏蔽</div></div>' +
+                '</div>';
             return;
         }
         fetch('/api/stats').then(r=>r.json()).then(d=>{
@@ -1055,7 +1047,6 @@ app.get('/admin', (req, res) => {
             document.getElementById('currentUrl').textContent = '主链接：'+d.url+' | 备用链接：'+d.fallbackUrl;
             document.getElementById('urlInput').value = d.url;
             document.getElementById('fallbackUrlInput').value = d.fallbackUrl||'';
-            // 更新开关状态
             ipQueryEnabled = d.ipQueryEnabled !== undefined ? d.ipQueryEnabled : true;
             const toggle = document.getElementById('ipToggle');
             const status = document.getElementById('toggleStatus');
@@ -1066,9 +1057,7 @@ app.get('/admin', (req, res) => {
                 toggle.classList.remove('active');
                 status.textContent = '(已关闭)';
             }
-            // 根据开关状态控制访客详情区域的显示
             updateVisitorVisibility();
-            // 重新加载统计和访客列表（会判断开关状态）
             loadStats();
             loadVisitors('blocked');
             loadVisitors('unblocked');
@@ -1086,7 +1075,7 @@ app.get('/admin', (req, res) => {
         } else {
             blockedNotice.style.display = 'block';
             unblockedNotice.style.display = 'block';
-            document.getElementById('blockedVisitorContainer').style.display = 'block'; // 仍显示但表格内容会显示历史数据
+            document.getElementById('blockedVisitorContainer').style.display = 'block';
             document.getElementById('unblockedVisitorContainer').style.display = 'block';
         }
     }
@@ -1116,14 +1105,12 @@ app.get('/admin', (req, res) => {
             toggle.classList.remove('active');
             status.textContent = '(已关闭)';
         }
-        // 保存配置
         const url = document.getElementById('urlInput').value.trim();
         const fallbackUrl = document.getElementById('fallbackUrlInput').value.trim();
         fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, fallbackUrl, ipQueryEnabled: newState }) })
         .then(r=>r.json()).then(d=>{
             if(!d.success) {
                 alert('保存开关状态失败，请重试');
-                // 回滚
                 if (newState) {
                     toggle.classList.remove('active');
                     status.textContent = '(已关闭)';
@@ -1134,7 +1121,7 @@ app.get('/admin', (req, res) => {
             } else {
                 ipQueryEnabled = newState;
                 updateVisitorVisibility();
-                loadStats(); // 刷新统计
+                loadStats();
                 loadVisitors('blocked');
                 loadVisitors('unblocked');
             }
@@ -1188,14 +1175,10 @@ app.get('/admin', (req, res) => {
     }
 
     function loadVisitors(type) {
-        // 如果开关关闭，显示提示，不请求数据（但历史数据仍然显示，因为表格内已有内容，但我们要清空并显示提示）
         const tbodyId = type === 'blocked' ? 'blockedVisitorBody' : 'unblockedVisitorBody';
         const containerId = type === 'blocked' ? 'blockedVisitorContainer' : 'unblockedVisitorContainer';
         if (!ipQueryEnabled) {
-            // 显示“无实时数据”占位，但不清除历史记录，我们会在页面加载时通过 loadConfig 控制显示提示，但表格仍显示历史数据（如果有）。
-            // 为了清晰，我们保留表格但显示提示，所以我们不修改表格内容，让历史数据仍然显示。
-            // 但为了不让用户混淆，我们可以清空表格并显示提示信息。
-            document.getElementById(tbodyId).innerHTML = `<tr><td colspan="8" style="text-align:center;color:#6b7a8f;">IP查询已关闭，无实时数据</td></tr>`;
+            document.getElementById(tbodyId).innerHTML = '<tr><td colspan="8" style="text-align:center;color:#6b7a8f;">IP查询已关闭，无实时数据</td></tr>';
             return;
         }
         const endpoint = type === 'blocked' ? '/api/visitors/blocked' : '/api/visitors/unblocked';
@@ -1204,7 +1187,7 @@ app.get('/admin', (req, res) => {
             .then(data => {
                 const tbody = document.getElementById(tbodyId);
                 if (!data || data.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="8">暂无数据</td></tr>`;
+                    tbody.innerHTML = '<tr><td colspan="8">暂无数据</td></tr>';
                     return;
                 }
                 tbody.innerHTML = data.map(item => {
@@ -1341,13 +1324,11 @@ app.get('/admin', (req, res) => {
         fetch('/admin/logout', { method:'POST' }).then(()=>{ location.reload(); });
     }
 
-    // 初始化加载
     loadConfig();
     loadBlocked();
     loadWhitelist();
     loadComplaints();
 
-    // 定时刷新（仅当开关开启时刷新）
     setInterval(() => {
         if (ipQueryEnabled) {
             loadStats();
