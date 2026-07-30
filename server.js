@@ -50,11 +50,11 @@ if (!fs.existsSync(COMPLAINTS_FILE)) fs.writeFileSync(COMPLAINTS_FILE, JSON.stri
 // ===== 工具函数 =====
 function getConfig() {
     const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    // 自动补全缺失字段
-    if (config.url === undefined) config.url = 'https://example.com/main';
-    if (config.fallbackUrl === undefined) config.fallbackUrl = 'https://example.com/fallback';
-    if (config.url2 === undefined) config.url2 = 'https://example.com/main2';
-    if (config.fallbackUrl2 === undefined) config.fallbackUrl2 = 'https://example.com/fallback2';
+    // 自动补全缺失或空值
+    if (!config.url) config.url = 'https://example.com/main';
+    if (!config.fallbackUrl) config.fallbackUrl = 'https://example.com/fallback';
+    if (!config.url2) config.url2 = 'https://example.com/main2';
+    if (!config.fallbackUrl2) config.fallbackUrl2 = 'https://example.com/fallback2';
     if (config.ipQueryEnabled === undefined) config.ipQueryEnabled = true;
     return config;
 }
@@ -421,7 +421,7 @@ function isBlocked(ip, geo, blockedList, whitelist) {
     return false;
 }
 
-// ===== 记录IP日志（如果开关关闭，直接返回，不记录任何日志） =====
+// ===== 记录IP日志 =====
 async function logIP(ip, action, req) {
     try {
         console.log(`[logIP] 开始记录 - IP: ${ip}, action: ${action}`);
@@ -695,10 +695,11 @@ app.get('/api/config', requireLogin, (req, res) => {
 app.post('/api/config', requireLogin, (req, res) => {
     const { url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled } = req.body;
     const config = getConfig();
-    if (url !== undefined) config.url = url;
-    if (fallbackUrl !== undefined) config.fallbackUrl = fallbackUrl;
-    if (url2 !== undefined) config.url2 = url2;
-    if (fallbackUrl2 !== undefined) config.fallbackUrl2 = fallbackUrl2;
+    // 如果提交了空字符串，则使用默认值（与页面1逻辑一致）
+    if (url !== undefined) config.url = url || 'https://example.com/main';
+    if (fallbackUrl !== undefined) config.fallbackUrl = fallbackUrl || 'https://example.com/fallback';
+    if (url2 !== undefined) config.url2 = url2 || 'https://example.com/main2';
+    if (fallbackUrl2 !== undefined) config.fallbackUrl2 = fallbackUrl2 || 'https://example.com/fallback2';
     if (ipQueryEnabled !== undefined) config.ipQueryEnabled = ipQueryEnabled;
     saveConfig(config);
     res.json({ success: true });
