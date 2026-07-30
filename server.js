@@ -49,7 +49,14 @@ if (!fs.existsSync(COMPLAINTS_FILE)) fs.writeFileSync(COMPLAINTS_FILE, JSON.stri
 
 // ===== 工具函数 =====
 function getConfig() {
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    // 自动补全缺失字段
+    if (config.url === undefined) config.url = 'https://example.com/main';
+    if (config.fallbackUrl === undefined) config.fallbackUrl = 'https://example.com/fallback';
+    if (config.url2 === undefined) config.url2 = 'https://example.com/main2';
+    if (config.fallbackUrl2 === undefined) config.fallbackUrl2 = 'https://example.com/fallback2';
+    if (config.ipQueryEnabled === undefined) config.ipQueryEnabled = true;
+    return config;
 }
 function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -850,7 +857,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（增加第二套链接配置）
+// 管理后台页面（双配置 + 完整功能）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -1096,9 +1103,13 @@ app.get('/admin', (req, res) => {
 
     function loadConfig() {
         fetch('/api/config').then(r=>r.json()).then(d=>{
-            // 显示当前配置
-            document.getElementById('currentUrl').textContent = '页面1主链接：'+d.url+' | 备用：'+d.fallbackUrl+
-                '  页面2主链接：'+d.url2+' | 备用：'+d.fallbackUrl2;
+            // 显示当前配置（防止 undefined）
+            const url = d.url || '未设置';
+            const fallbackUrl = d.fallbackUrl || '未设置';
+            const url2 = d.url2 || '未设置';
+            const fallbackUrl2 = d.fallbackUrl2 || '未设置';
+            document.getElementById('currentUrl').textContent = '页面1主链接：'+url+' | 备用：'+fallbackUrl+
+                '  页面2主链接：'+url2+' | 备用：'+fallbackUrl2;
             document.getElementById('urlInput').value = d.url || '';
             document.getElementById('fallbackUrlInput').value = d.fallbackUrl || '';
             document.getElementById('urlInput2').value = d.url2 || '';
@@ -1205,12 +1216,214 @@ app.get('/admin', (req, res) => {
         });
     }
 
-    // 以下函数保持不变（loadBlocked, loadWhitelist, loadVisitors, loadComplaints, clearCache, testRisk, logout 等）
-    // 由于篇幅，此处省略，但实际代码中需完整保留（与之前相同）。
-    // 注意：loadVisitors 中已引用了 ipQueryEnabled，其他函数无变化。
-    // 为了完整性，我们保留所有原有函数（本回答中为节省篇幅略去，但部署时务必包含全部）。
-    // 您可以直接使用之前修复语法错误版本的完整函数，只需替换 loadConfig 和 updateAllConfig 即可。
-    // 此处我们提供完整 JS 代码段，但为防遗漏，下面的 script 中会包含完整函数。
+    function loadBlocked() {
+        fetch('/api/blocked').then(r=>r.json()).then(d=>{
+            const container = document.getElementById('blockedList');
+            let html='';
+            d.ips.forEach(ip=>{ html+=\`<span class="blocked-item">IP:\${ip} <span class="del" onclick="deleteBlock('ip','\${ip}')">✕</span></span> \`; });
+            d.cities.forEach(city=>{ html+=\`<span class="blocked-item">城市:\${city} <span class="del" onclick="deleteBlock('city','\${city}')">✕</span></span> \`; });
+            d.provinces.forEach(prov=>{ html+=\`<span class="blocked-item">省份:\${prov} <span class="del" onclick="deleteBlock('province','\${prov}')">✕</span></span> \`; });
+            container.innerHTML = html || '<span style="color:#888;font-size:13px;">暂无屏蔽</span>';
+        });
+    }
+    function addBlock() {
+        const value = document.getElementById('blockInput').value.trim();
+        const type = document.getElementById('blockType').value;
+        if(!value){ alert('请输入内容'); return; }
+        fetch('/api/blocked', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ type, value }) })
+        .then(r=>r.json()).then(d=>{ if(d.success){ document.getElementById('blockInput').value=''; loadBlocked(); } else { alert(d.message||'添加失败'); } });
+    }
+    function deleteBlock(type, value) {
+        if(!confirm('确认删除屏蔽 '+value+' 吗？')) return;
+        fetch('/api/blocked/'+type+'/'+encodeURIComponent(value), { method:'DELETE' })
+        .then(r=>r.json()).then(d=>{ if(d.success) loadBlocked(); });
+    }
+
+    function loadWhitelist() {
+        fetch('/api/whitelist').then(r=>r.json()).then(d=>{
+            const container = document.getElementById('whitelistList');
+            let html='';
+            d.ips.forEach(ip=>{ html+=\`<span class="whitelist-item">IP:\${ip} <span class="del" onclick="deleteWhitelist('ip','\${ip}')">✕</span></span> \`; });
+            d.cities.forEach(city=>{ html+=\`<span class="whitelist-item">城市:\${city} <span class="del" onclick="deleteWhitelist('city','\${city}')">✕</span></span> \`; });
+            d.provinces.forEach(prov=>{ html+=\`<span class="whitelist-item">省份:\${prov} <span class="del" onclick="deleteWhitelist('province','\${prov}')">✕</span></span> \`; });
+            container.innerHTML = html || '<span style="color:#888;font-size:13px;">暂无白名单</span>';
+        });
+    }
+    function addWhitelist() {
+        const value = document.getElementById('whitelistInput').value.trim();
+        const type = document.getElementById('whitelistType').value;
+        if(!value){ alert('请输入内容'); return; }
+        fetch('/api/whitelist', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ type, value }) })
+        .then(r=>r.json()).then(d=>{ if(d.success){ document.getElementById('whitelistInput').value=''; loadWhitelist(); } else { alert(d.message||'添加失败'); } });
+    }
+    function deleteWhitelist(type, value) {
+        if(!confirm('确认删除白名单 '+value+' 吗？')) return;
+        fetch('/api/whitelist/'+type+'/'+encodeURIComponent(value), { method:'DELETE' })
+        .then(r=>r.json()).then(d=>{ if(d.success) loadWhitelist(); });
+    }
+
+    function loadVisitors(type) {
+        const tbodyId = type === 'blocked' ? 'blockedVisitorBody' : 'unblockedVisitorBody';
+        if (!ipQueryEnabled) {
+            document.getElementById(tbodyId).innerHTML = '<tr><td colspan="8" style="text-align:center;color:#6b7a8f;">IP查询已关闭，无实时数据</td></tr>';
+            return;
+        }
+        const endpoint = type === 'blocked' ? '/api/visitors/blocked' : '/api/visitors/unblocked';
+        fetch(endpoint)
+            .then(r => r.json())
+            .then(data => {
+                const tbody = document.getElementById(tbodyId);
+                if (!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="8">暂无数据</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.map(item => {
+                    const compare = item.compare || {};
+                    const matchText = compare.match ? '✅ 一致' : '❌ 不一致';
+                    const badgeClass = compare.match ? 'compare-match' : 'compare-fail';
+                    const services = compare.services || {};
+                    const ip666Status = services.ip666 ? (services.ip666.success ? '✅' : '❌') : '❌';
+                    const aliyunStatus = services.aliyun ? (services.aliyun.success ? '✅' : '❌') : '❌';
+                    const backupStatus = services.backup ? (services.backup.success ? '✅' : '❌') : '❌';
+                    const ip666Data = services.ip666 && services.ip666.data ? \`\${services.ip666.data.city}(\${services.ip666.data.region})\` : '不可用';
+                    const aliyunData = services.aliyun && services.aliyun.data ? \`\${services.aliyun.data.city}(\${services.aliyun.data.region})\` : '不可用';
+                    const backupData = services.backup && services.backup.data ? \`\${services.backup.data.city}(\${services.backup.data.region})\` : '不可用';
+                    const usedBackup = compare.usedBackup || false;
+                    const riskTag = compare.riskTag || '';
+                    const riskLevel = compare.riskLevel || '无';
+                    let riskDisplay = riskTag ? \`<span class="risk-tag">\${riskTag}</span> (等级:\${riskLevel})\` : '无';
+
+                    let compareDisplay = \`
+                        <span class="compare-badge \${badgeClass}">\${matchText}</span><br>
+                        <span style="font-size:11px;color:#666;">
+                            <span class="service-tag \${services.ip666 && services.ip666.success ? 'service-success' : 'service-fail'}">IP666: \${ip666Status} \${ip666Data}</span><br>
+                            <span class="service-tag \${services.aliyun && services.aliyun.success ? 'service-success' : 'service-fail'}">阿里云: \${aliyunStatus} \${aliyunData}</span><br>
+                            <span class="service-tag \${services.backup && services.backup.success ? 'service-success' : 'service-fail'}">备用: \${backupStatus} \${backupData}</span>
+                            \${usedBackup ? '<span class="backup-tag">🔄 使用了备用</span>' : ''}
+                        </span>
+                    \`;
+                    return \`
+                        <tr>
+                            <td>\${item.ip}</td>
+                            <td>\${compareDisplay}</td>
+                            <td>\${item.region}</td>
+                            <td>\${riskDisplay}</td>
+                            <td>\${item.device || '未知'}</td>
+                            <td>\${item.count}</td>
+                            <td>\${formatBeijingTime(item.firstTime)}</td>
+                            <td>\${formatBeijingTime(item.lastTime)}</td>
+                        </tr>
+                    \`;
+                }).join('');
+            })
+            .catch(() => {
+                document.getElementById(tbodyId).innerHTML = '<tr><td colspan="8">加载失败</td></tr>';
+            });
+    }
+
+    function loadComplaints() {
+        fetch('/api/complaints')
+            .then(r => r.json())
+            .then(data => {
+                const list = document.getElementById('complaintList');
+                if (!data || data.length === 0) {
+                    list.innerHTML = '<p style="color:#888;font-size:13px;">暂无投诉</p>';
+                    return;
+                }
+                list.innerHTML = data.map(c => \`
+                    <div class="complaint-item">
+                        <div><strong>时间：</strong>\${formatBeijingTime(c.createdAt)}</div>
+                        <div><strong>联系方式：</strong>\${c.contact || '未填写'}</div>
+                        <div><strong>内容：</strong>\${c.text || '（无文字）'}</div>
+                        \${c.image ? '<div><strong>图片：</strong><br><img src="' + c.image + '" /></div>' : ''}
+                    </div>
+                \`).join('');
+            })
+            .catch(() => {
+                document.getElementById('complaintList').innerHTML = '<p style="color:#888;font-size:13px;">加载失败</p>';
+            });
+    }
+
+    function clearCache() {
+        if(!confirm('确定清空 IP 缓存（包含风险缓存）吗？页面将刷新以应用最新数据。')) return;
+        fetch('/api/clear-cache', { method:'POST' })
+            .then(r=>r.json())
+            .then(d=>{
+                const status = document.getElementById('clearStatus');
+                if(d.success){
+                    status.textContent = '✅ 已清空 ' + d.cleared + ' 条缓存，页面即将刷新...';
+                    status.style.color = '#155724';
+                    setTimeout(() => { window.location.reload(); }, 1000);
+                } else {
+                    status.textContent = '❌ 清空失败';
+                    status.style.color = '#721c24';
+                }
+            })
+            .catch(()=>{
+                document.getElementById('clearStatus').textContent = '❌ 请求失败';
+                document.getElementById('clearStatus').style.color = '#721c24';
+            });
+    }
+
+    function testRisk() {
+        const ip = document.getElementById('testIpInput').value.trim();
+        if (!ip) {
+            document.getElementById('testResult').textContent = '⚠️ 请输入IP地址';
+            document.getElementById('testResult').style.color = '#e17055';
+            return;
+        }
+        if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+            document.getElementById('testResult').textContent = '⚠️ IP格式无效';
+            document.getElementById('testResult').style.color = '#e17055';
+            return;
+        }
+        document.getElementById('testResult').textContent = '查询中...';
+        document.getElementById('testResult').style.color = '#6b7a8f';
+        fetch('/api/test-risk/' + ip)
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    const tag = data.data.tag || '无';
+                    const level = data.data.level || '无';
+                    const score = data.data.score || 0;
+                    let msg = \`✅ 标签: \${tag}，等级: \${level}，分数: \${score}\`;
+                    if (tag.includes('Proxy') || tag.includes('VPN') || tag.includes('Sec_Dial')) {
+                        msg += ' 🔴 将被屏蔽';
+                    } else if (tag) {
+                        msg += ' ⚪ 忽略（非代理/VPN/秒拨）';
+                    } else {
+                        msg += ' 🟢 无风险';
+                    }
+                    document.getElementById('testResult').textContent = msg;
+                    document.getElementById('testResult').style.color = '#1a3a5c';
+                } else {
+                    document.getElementById('testResult').textContent = '❌ 查询失败: ' + (data.error || '未知错误');
+                    document.getElementById('testResult').style.color = '#e17055';
+                }
+            })
+            .catch(err => {
+                document.getElementById('testResult').textContent = '❌ 网络错误';
+                document.getElementById('testResult').style.color = '#e17055';
+            });
+    }
+
+    function logout() {
+        fetch('/admin/logout', { method:'POST' }).then(()=>{ location.reload(); });
+    }
+
+    loadConfig();
+    loadBlocked();
+    loadWhitelist();
+    loadComplaints();
+
+    setInterval(() => {
+        if (ipQueryEnabled) {
+            loadStats();
+            loadVisitors('blocked');
+            loadVisitors('unblocked');
+            loadComplaints();
+        }
+    }, 30000);
 </script>
 </body>
 </html>
