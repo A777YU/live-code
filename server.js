@@ -50,11 +50,11 @@ if (!fs.existsSync(COMPLAINTS_FILE)) fs.writeFileSync(COMPLAINTS_FILE, JSON.stri
 // ===== 工具函数 =====
 function getConfig() {
     const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    // 自动补全缺失或空值
-    if (!config.url) config.url = 'https://example.com/main';
-    if (!config.fallbackUrl) config.fallbackUrl = 'https://example.com/fallback';
-    if (!config.url2) config.url2 = 'https://example.com/main2';
-    if (!config.fallbackUrl2) config.fallbackUrl2 = 'https://example.com/fallback2';
+    // 所有字段统一补全默认值
+    if (!config.url || config.url === '主链接2') config.url = 'https://example.com/main';
+    if (!config.fallbackUrl || config.fallbackUrl === '备用链接2') config.fallbackUrl = 'https://example.com/fallback';
+    if (!config.url2 || config.url2 === '主链接2') config.url2 = 'https://example.com/main2';
+    if (!config.fallbackUrl2 || config.fallbackUrl2 === '备用链接2') config.fallbackUrl2 = 'https://example.com/fallback2';
     if (config.ipQueryEnabled === undefined) config.ipQueryEnabled = true;
     return config;
 }
@@ -589,7 +589,7 @@ app.get('/api/config', async (req, res) => {
     });
 });
 
-// 页面2（新 index2.html）配置接口
+// 页面2（新 index2.html）配置接口（与页面1逻辑完全一致）
 app.get('/api/config2', async (req, res) => {
     const config = getConfig();
     const ipQueryEnabled = config.ipQueryEnabled !== undefined ? config.ipQueryEnabled : true;
@@ -688,18 +688,34 @@ app.get('/api/test-risk/:ip', requireLogin, async (req, res) => {
     });
 });
 
-// 配置管理（保存两套链接）
+// 配置管理（保存两套链接，与页面1逻辑完全一致）
 app.get('/api/config', requireLogin, (req, res) => {
     res.json(getConfig());
 });
 app.post('/api/config', requireLogin, (req, res) => {
     const { url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled } = req.body;
     const config = getConfig();
-    // 如果提交了空字符串，则使用默认值（与页面1逻辑一致）
-    if (url !== undefined) config.url = url || 'https://example.com/main';
-    if (fallbackUrl !== undefined) config.fallbackUrl = fallbackUrl || 'https://example.com/fallback';
-    if (url2 !== undefined) config.url2 = url2 || 'https://example.com/main2';
-    if (fallbackUrl2 !== undefined) config.fallbackUrl2 = fallbackUrl2 || 'https://example.com/fallback2';
+    // 与页面1完全相同的处理逻辑
+    if (url !== undefined && url !== '主链接2') {
+        config.url = url || 'https://example.com/main';
+    } else if (url === '主链接2') {
+        config.url = 'https://example.com/main';
+    }
+    if (fallbackUrl !== undefined && fallbackUrl !== '备用链接2') {
+        config.fallbackUrl = fallbackUrl || 'https://example.com/fallback';
+    } else if (fallbackUrl === '备用链接2') {
+        config.fallbackUrl = 'https://example.com/fallback';
+    }
+    if (url2 !== undefined && url2 !== '主链接2') {
+        config.url2 = url2 || 'https://example.com/main2';
+    } else if (url2 === '主链接2') {
+        config.url2 = 'https://example.com/main2';
+    }
+    if (fallbackUrl2 !== undefined && fallbackUrl2 !== '备用链接2') {
+        config.fallbackUrl2 = fallbackUrl2 || 'https://example.com/fallback2';
+    } else if (fallbackUrl2 === '备用链接2') {
+        config.fallbackUrl2 = 'https://example.com/fallback2';
+    }
     if (ipQueryEnabled !== undefined) config.ipQueryEnabled = ipQueryEnabled;
     saveConfig(config);
     res.json({ success: true });
@@ -858,7 +874,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（双配置 + 完整功能）
+// 管理后台页面
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -1104,11 +1120,11 @@ app.get('/admin', (req, res) => {
 
     function loadConfig() {
         fetch('/api/config').then(r=>r.json()).then(d=>{
-            // 显示当前配置（防止 undefined）
-            const url = d.url || '未设置';
-            const fallbackUrl = d.fallbackUrl || '未设置';
-            const url2 = d.url2 || '未设置';
-            const fallbackUrl2 = d.fallbackUrl2 || '未设置';
+            // 所有字段统一处理，与页面1逻辑完全一致
+            const url = d.url || 'https://example.com/main';
+            const fallbackUrl = d.fallbackUrl || 'https://example.com/fallback';
+            const url2 = d.url2 || 'https://example.com/main2';
+            const fallbackUrl2 = d.fallbackUrl2 || 'https://example.com/fallback2';
             document.getElementById('currentUrl').textContent = '页面1主链接：'+url+' | 备用：'+fallbackUrl+
                 '  页面2主链接：'+url2+' | 备用：'+fallbackUrl2;
             document.getElementById('urlInput').value = d.url || '';
@@ -1150,16 +1166,24 @@ app.get('/admin', (req, res) => {
         const fallbackUrl = document.getElementById('fallbackUrlInput').value.trim();
         const url2 = document.getElementById('urlInput2').value.trim();
         const fallbackUrl2 = document.getElementById('fallbackUrlInput2').value.trim();
-        if (!url || !url2) {
-            alert('两个页面都必须填写主链接');
-            return;
-        }
+        // 如果页面2输入框为空或占位文字，自动使用默认值
+        const finalUrl2 = (url2 && url2 !== '主链接2') ? url2 : 'https://example.com/main2';
+        const finalFallbackUrl2 = (fallbackUrl2 && fallbackUrl2 !== '备用链接2') ? fallbackUrl2 : 'https://example.com/fallback2';
+        const finalUrl = (url && url !== '主链接') ? url : 'https://example.com/main';
+        const finalFallbackUrl = (fallbackUrl && fallbackUrl !== '备用链接') ? fallbackUrl : 'https://example.com/fallback';
+        
         const toggle = document.getElementById('ipToggle');
         const ipQueryEnabledState = toggle.classList.contains('active');
         fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled: ipQueryEnabledState })
+            body: JSON.stringify({ 
+                url: finalUrl, 
+                fallbackUrl: finalFallbackUrl, 
+                url2: finalUrl2, 
+                fallbackUrl2: finalFallbackUrl2, 
+                ipQueryEnabled: ipQueryEnabledState 
+            })
         })
         .then(r => r.json())
         .then(d => {
@@ -1186,15 +1210,20 @@ app.get('/admin', (req, res) => {
             toggle.classList.remove('active');
             status.textContent = '(已关闭)';
         }
-        // 保存开关状态（同时保留当前链接配置）
+        // 保存开关状态
         const url = document.getElementById('urlInput').value.trim();
         const fallbackUrl = document.getElementById('fallbackUrlInput').value.trim();
         const url2 = document.getElementById('urlInput2').value.trim();
         const fallbackUrl2 = document.getElementById('fallbackUrlInput2').value.trim();
+        const finalUrl2 = (url2 && url2 !== '主链接2') ? url2 : 'https://example.com/main2';
+        const finalFallbackUrl2 = (fallbackUrl2 && fallbackUrl2 !== '备用链接2') ? fallbackUrl2 : 'https://example.com/fallback2';
+        const finalUrl = (url && url !== '主链接') ? url : 'https://example.com/main';
+        const finalFallbackUrl = (fallbackUrl && fallbackUrl !== '备用链接') ? fallbackUrl : 'https://example.com/fallback';
+        
         fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled: newState })
+            body: JSON.stringify({ url: finalUrl, fallbackUrl: finalFallbackUrl, url2: finalUrl2, fallbackUrl2: finalFallbackUrl2, ipQueryEnabled: newState })
         })
         .then(r => r.json())
         .then(d => {
