@@ -50,13 +50,14 @@ if (!fs.existsSync(COMPLAINTS_FILE)) fs.writeFileSync(COMPLAINTS_FILE, JSON.stri
 // ===== 工具函数 =====
 function getConfig() {
     const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    // 读取时补全默认值（若为空）
-    if (!config.url) config.url = 'https://example.com/main';
-    if (!config.fallbackUrl) config.fallbackUrl = 'https://example.com/fallback';
-    if (!config.url2) config.url2 = 'https://example.com/main2';
-    if (!config.fallbackUrl2) config.fallbackUrl2 = 'https://example.com/fallback2';
-    if (config.ipQueryEnabled === undefined) config.ipQueryEnabled = true;
-    return config;
+    // ★ 读取时补默认值（若字段为空或不存在） ★
+    return {
+        url: config.url || 'https://example.com/main',
+        fallbackUrl: config.fallbackUrl || 'https://example.com/fallback',
+        url2: config.url2 || 'https://example.com/main2',
+        fallbackUrl2: config.fallbackUrl2 || 'https://example.com/fallback2',
+        ipQueryEnabled: config.ipQueryEnabled !== undefined ? config.ipQueryEnabled : true
+    };
 }
 function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -683,18 +684,18 @@ app.get('/api/test-risk/:ip', requireLogin, async (req, res) => {
     });
 });
 
-// 配置管理（保存两套链接）—— 与页面1逻辑完全一致：直接保存用户输入
+// ★ 配置管理（保存两套链接）—— 直接保存所有字段，不添加额外判断 ★
 app.get('/api/config', requireLogin, (req, res) => {
     res.json(getConfig());
 });
 app.post('/api/config', requireLogin, (req, res) => {
     const { url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled } = req.body;
     const config = getConfig();
-    // ★ 直接保存，不修改用户输入 ★
-    if (url !== undefined) config.url = url;
-    if (fallbackUrl !== undefined) config.fallbackUrl = fallbackUrl;
-    if (url2 !== undefined) config.url2 = url2;
-    if (fallbackUrl2 !== undefined) config.fallbackUrl2 = fallbackUrl2;
+    // ★ 无条件赋值，保留用户输入（包括空字符串） ★
+    config.url = url;
+    config.fallbackUrl = fallbackUrl;
+    config.url2 = url2;
+    config.fallbackUrl2 = fallbackUrl2;
     if (ipQueryEnabled !== undefined) config.ipQueryEnabled = ipQueryEnabled;
     saveConfig(config);
     res.json({ success: true });
@@ -1099,7 +1100,7 @@ app.get('/admin', (req, res) => {
 
     function loadConfig() {
         fetch('/api/config').then(r=>r.json()).then(d=>{
-            // 直接显示后端返回的值（若为空则补默认值）
+            // 直接显示后端返回的值（若为空则显示默认值）
             document.getElementById('urlInput').value = d.url || '';
             document.getElementById('fallbackUrlInput').value = d.fallbackUrl || '';
             document.getElementById('urlInput2').value = d.url2 || '';
