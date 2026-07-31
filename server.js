@@ -50,12 +50,12 @@ if (!fs.existsSync(COMPLAINTS_FILE)) fs.writeFileSync(COMPLAINTS_FILE, JSON.stri
 // ===== 工具函数 =====
 function getConfig() {
     const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    // ★ 读取时补默认值（若字段为空或不存在） ★
+    // ★ 当字段为 undefined、null 或空字符串时，补默认值 ★
     return {
-        url: config.url || 'https://example.com/main',
-        fallbackUrl: config.fallbackUrl || 'https://example.com/fallback',
-        url2: config.url2 || 'https://example.com/main2',
-        fallbackUrl2: config.fallbackUrl2 || 'https://example.com/fallback2',
+        url: (config.url && config.url.trim() !== '') ? config.url : 'https://example.com/main',
+        fallbackUrl: (config.fallbackUrl && config.fallbackUrl.trim() !== '') ? config.fallbackUrl : 'https://example.com/fallback',
+        url2: (config.url2 && config.url2.trim() !== '') ? config.url2 : 'https://example.com/main2',
+        fallbackUrl2: (config.fallbackUrl2 && config.fallbackUrl2.trim() !== '') ? config.fallbackUrl2 : 'https://example.com/fallback2',
         ipQueryEnabled: config.ipQueryEnabled !== undefined ? config.ipQueryEnabled : true
     };
 }
@@ -684,18 +684,18 @@ app.get('/api/test-risk/:ip', requireLogin, async (req, res) => {
     });
 });
 
-// ★ 配置管理（保存两套链接）—— 直接保存所有字段，不添加额外判断 ★
+// ★ 配置管理：支持部分更新 ★
 app.get('/api/config', requireLogin, (req, res) => {
     res.json(getConfig());
 });
 app.post('/api/config', requireLogin, (req, res) => {
     const { url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled } = req.body;
     const config = getConfig();
-    // ★ 无条件赋值，保留用户输入（包括空字符串） ★
-    config.url = url;
-    config.fallbackUrl = fallbackUrl;
-    config.url2 = url2;
-    config.fallbackUrl2 = fallbackUrl2;
+    // 只更新传入的字段，未传入则保留原值
+    if (url !== undefined) config.url = url;
+    if (fallbackUrl !== undefined) config.fallbackUrl = fallbackUrl;
+    if (url2 !== undefined) config.url2 = url2;
+    if (fallbackUrl2 !== undefined) config.fallbackUrl2 = fallbackUrl2;
     if (ipQueryEnabled !== undefined) config.ipQueryEnabled = ipQueryEnabled;
     saveConfig(config);
     res.json({ success: true });
@@ -854,7 +854,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（完整功能，双配置）
+// 管理后台页面（双按钮独立保存）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -926,6 +926,7 @@ app.get('/admin', (req, res) => {
         .offline-notice { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px 14px; border-radius: 6px; margin: 8px 0; color: #856404; }
         .config-section { border: 1px solid #e9ecef; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
         .config-section h4 { margin: 0 0 6px 0; font-size: 14px; color: #1a3a5c; }
+        .btn-save { margin-top: 4px; }
     </style>
 </head>
 <body>
@@ -970,7 +971,7 @@ app.get('/admin', (req, res) => {
         <p style="font-size:12px;color:#888;margin-top:6px;">关闭后，所有页面直接跳转主链接，不进行任何IP查询和屏蔽判断，加载速度更快。</p>
     </div>
 
-    <!-- 链接配置：两套 -->
+    <!-- 链接配置：两套，各自独立保存 -->
     <div class="card">
         <h3>🔗 跳转链接配置</h3>
         <!-- 页面1（默认） -->
@@ -978,15 +979,17 @@ app.get('/admin', (req, res) => {
             <h4>📄 页面1（默认活码 /）</h4>
             <div class="config-row"><label>主链接：</label><input type="text" id="urlInput" placeholder="主链接" /></div>
             <div class="config-row"><label>备用链接：</label><input type="text" id="fallbackUrlInput" placeholder="备用链接" /></div>
+            <button class="btn btn-sm btn-save" onclick="savePage1()">保存页面1</button>
+            <span id="status1" class="status"></span>
         </div>
         <!-- 页面2（新页面 /index2.html） -->
         <div class="config-section">
             <h4>📄 页面2（新活码 /index2.html）</h4>
             <div class="config-row"><label>主链接：</label><input type="text" id="urlInput2" placeholder="主链接2" /></div>
             <div class="config-row"><label>备用链接：</label><input type="text" id="fallbackUrlInput2" placeholder="备用链接2" /></div>
+            <button class="btn btn-sm btn-save" onclick="savePage2()">保存页面2</button>
+            <span id="status2" class="status"></span>
         </div>
-        <button class="btn" onclick="updateAllConfig()">保存全部链接</button>
-        <span id="urlStatus" class="status"></span>
         <p id="currentUrl" style="font-size:12px;color:#888;margin-top:4px;"></p>
     </div>
 
@@ -1100,7 +1103,6 @@ app.get('/admin', (req, res) => {
 
     function loadConfig() {
         fetch('/api/config').then(r=>r.json()).then(d=>{
-            // 直接显示后端返回的值（若为空则显示默认值）
             document.getElementById('urlInput').value = d.url || '';
             document.getElementById('fallbackUrlInput').value = d.fallbackUrl || '';
             document.getElementById('urlInput2').value = d.url2 || '';
@@ -1126,42 +1128,61 @@ app.get('/admin', (req, res) => {
         });
     }
 
-    function updateVisitorVisibility() {
-        const blockedNotice = document.getElementById('blockedOfflineNotice');
-        const unblockedNotice = document.getElementById('unblockedOfflineNotice');
-        if (ipQueryEnabled) {
-            blockedNotice.style.display = 'none';
-            unblockedNotice.style.display = 'none';
-        } else {
-            blockedNotice.style.display = 'block';
-            unblockedNotice.style.display = 'block';
-        }
-    }
-
-    function updateAllConfig() {
-        // ★ 与页面1完全一致：直接取输入框的值，不做任何替换 ★
+    // ★ 保存页面1配置 ★
+    function savePage1() {
         const url = document.getElementById('urlInput').value.trim();
         const fallbackUrl = document.getElementById('fallbackUrlInput').value.trim();
-        const url2 = document.getElementById('urlInput2').value.trim();
-        const fallbackUrl2 = document.getElementById('fallbackUrlInput2').value.trim();
-        const toggle = document.getElementById('ipToggle');
-        const ipQueryEnabledState = toggle.classList.contains('active');
+        const statusEl = document.getElementById('status1');
+        statusEl.textContent = '保存中...';
+        statusEl.className = 'status';
         fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled: ipQueryEnabledState })
+            body: JSON.stringify({ url, fallbackUrl })
         })
         .then(r => r.json())
         .then(d => {
-            const status = document.getElementById('urlStatus');
             if (d.success) {
-                status.textContent = '✅ 保存成功';
-                status.className = 'status';
-                loadConfig();
+                statusEl.textContent = '✅ 保存成功';
+                statusEl.className = 'status';
+                loadConfig(); // 刷新显示
             } else {
-                status.textContent = '❌ ' + d.message;
-                status.className = 'status error';
+                statusEl.textContent = '❌ ' + d.message;
+                statusEl.className = 'status error';
             }
+        })
+        .catch(() => {
+            statusEl.textContent = '❌ 网络错误';
+            statusEl.className = 'status error';
+        });
+    }
+
+    // ★ 保存页面2配置 ★
+    function savePage2() {
+        const url2 = document.getElementById('urlInput2').value.trim();
+        const fallbackUrl2 = document.getElementById('fallbackUrlInput2').value.trim();
+        const statusEl = document.getElementById('status2');
+        statusEl.textContent = '保存中...';
+        statusEl.className = 'status';
+        fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url2, fallbackUrl2 })
+        })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
+                statusEl.textContent = '✅ 保存成功';
+                statusEl.className = 'status';
+                loadConfig(); // 刷新显示
+            } else {
+                statusEl.textContent = '❌ ' + d.message;
+                statusEl.className = 'status error';
+            }
+        })
+        .catch(() => {
+            statusEl.textContent = '❌ 网络错误';
+            statusEl.className = 'status error';
         });
     }
 
@@ -1176,15 +1197,11 @@ app.get('/admin', (req, res) => {
             toggle.classList.remove('active');
             status.textContent = '(已关闭)';
         }
-        // 保存开关状态（同时保留当前链接配置）
-        const url = document.getElementById('urlInput').value.trim();
-        const fallbackUrl = document.getElementById('fallbackUrlInput').value.trim();
-        const url2 = document.getElementById('urlInput2').value.trim();
-        const fallbackUrl2 = document.getElementById('fallbackUrlInput2').value.trim();
+        // 保存开关状态（只更新 ipQueryEnabled）
         fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled: newState })
+            body: JSON.stringify({ ipQueryEnabled: newState })
         })
         .then(r => r.json())
         .then(d => {
@@ -1205,6 +1222,18 @@ app.get('/admin', (req, res) => {
                 loadVisitors('unblocked');
             }
         });
+    }
+
+    function updateVisitorVisibility() {
+        const blockedNotice = document.getElementById('blockedOfflineNotice');
+        const unblockedNotice = document.getElementById('unblockedOfflineNotice');
+        if (ipQueryEnabled) {
+            blockedNotice.style.display = 'none';
+            unblockedNotice.style.display = 'none';
+        } else {
+            blockedNotice.style.display = 'block';
+            unblockedNotice.style.display = 'block';
+        }
     }
 
     function loadBlocked() {
