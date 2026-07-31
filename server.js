@@ -50,14 +50,16 @@ if (!fs.existsSync(COMPLAINTS_FILE)) fs.writeFileSync(COMPLAINTS_FILE, JSON.stri
 // ===== 工具函数 =====
 function getConfig() {
     const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    // ★ 当字段为 undefined、null 或空字符串时，补默认值 ★
-    return {
+    console.log('[getConfig] 原始配置:', config);
+    const result = {
         url: (config.url && config.url.trim() !== '') ? config.url : 'https://example.com/main',
         fallbackUrl: (config.fallbackUrl && config.fallbackUrl.trim() !== '') ? config.fallbackUrl : 'https://example.com/fallback',
         url2: (config.url2 && config.url2.trim() !== '') ? config.url2 : 'https://example.com/main2',
         fallbackUrl2: (config.fallbackUrl2 && config.fallbackUrl2.trim() !== '') ? config.fallbackUrl2 : 'https://example.com/fallback2',
         ipQueryEnabled: config.ipQueryEnabled !== undefined ? config.ipQueryEnabled : true
     };
+    console.log('[getConfig] 返回结果:', result);
+    return result;
 }
 function saveConfig(config) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -686,18 +688,22 @@ app.get('/api/test-risk/:ip', requireLogin, async (req, res) => {
 
 // ★ 配置管理：支持部分更新 ★
 app.get('/api/config', requireLogin, (req, res) => {
-    res.json(getConfig());
+    const config = getConfig();
+    console.log('[GET /api/config] 返回数据:', config);
+    res.json(config);
 });
 app.post('/api/config', requireLogin, (req, res) => {
     const { url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled } = req.body;
+    console.log('[POST /api/config] 收到数据:', { url, fallbackUrl, url2, fallbackUrl2, ipQueryEnabled });
     const config = getConfig();
-    // 只更新传入的字段，未传入则保留原值
+    // 只更新传入的字段
     if (url !== undefined) config.url = url;
     if (fallbackUrl !== undefined) config.fallbackUrl = fallbackUrl;
     if (url2 !== undefined) config.url2 = url2;
     if (fallbackUrl2 !== undefined) config.fallbackUrl2 = fallbackUrl2;
     if (ipQueryEnabled !== undefined) config.ipQueryEnabled = ipQueryEnabled;
     saveConfig(config);
+    console.log('[POST /api/config] 保存后的配置:', config);
     res.json({ success: true });
 });
 
@@ -854,7 +860,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（双按钮独立保存）
+// 管理后台页面（双按钮独立保存，带调试日志）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -1103,6 +1109,7 @@ app.get('/admin', (req, res) => {
 
     function loadConfig() {
         fetch('/api/config').then(r=>r.json()).then(d=>{
+            console.log('[loadConfig] 后端返回数据:', d); // ★ 调试日志
             document.getElementById('urlInput').value = d.url || '';
             document.getElementById('fallbackUrlInput').value = d.fallbackUrl || '';
             document.getElementById('urlInput2').value = d.url2 || '';
@@ -1128,6 +1135,18 @@ app.get('/admin', (req, res) => {
         });
     }
 
+    function updateVisitorVisibility() {
+        const blockedNotice = document.getElementById('blockedOfflineNotice');
+        const unblockedNotice = document.getElementById('unblockedOfflineNotice');
+        if (ipQueryEnabled) {
+            blockedNotice.style.display = 'none';
+            unblockedNotice.style.display = 'none';
+        } else {
+            blockedNotice.style.display = 'block';
+            unblockedNotice.style.display = 'block';
+        }
+    }
+
     // ★ 保存页面1配置 ★
     function savePage1() {
         const url = document.getElementById('urlInput').value.trim();
@@ -1135,6 +1154,7 @@ app.get('/admin', (req, res) => {
         const statusEl = document.getElementById('status1');
         statusEl.textContent = '保存中...';
         statusEl.className = 'status';
+        console.log('[savePage1] 提交数据:', { url, fallbackUrl });
         fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1142,6 +1162,7 @@ app.get('/admin', (req, res) => {
         })
         .then(r => r.json())
         .then(d => {
+            console.log('[savePage1] 保存响应:', d);
             if (d.success) {
                 statusEl.textContent = '✅ 保存成功';
                 statusEl.className = 'status';
@@ -1164,6 +1185,7 @@ app.get('/admin', (req, res) => {
         const statusEl = document.getElementById('status2');
         statusEl.textContent = '保存中...';
         statusEl.className = 'status';
+        console.log('[savePage2] 提交数据:', { url2, fallbackUrl2 });
         fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1171,6 +1193,7 @@ app.get('/admin', (req, res) => {
         })
         .then(r => r.json())
         .then(d => {
+            console.log('[savePage2] 保存响应:', d);
             if (d.success) {
                 statusEl.textContent = '✅ 保存成功';
                 statusEl.className = 'status';
@@ -1222,18 +1245,6 @@ app.get('/admin', (req, res) => {
                 loadVisitors('unblocked');
             }
         });
-    }
-
-    function updateVisitorVisibility() {
-        const blockedNotice = document.getElementById('blockedOfflineNotice');
-        const unblockedNotice = document.getElementById('unblockedOfflineNotice');
-        if (ipQueryEnabled) {
-            blockedNotice.style.display = 'none';
-            unblockedNotice.style.display = 'none';
-        } else {
-            blockedNotice.style.display = 'block';
-            unblockedNotice.style.display = 'block';
-        }
     }
 
     function loadBlocked() {
