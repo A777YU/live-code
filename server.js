@@ -860,7 +860,7 @@ app.get('/api/stats', requireLogin, (req, res) => {
 });
 
 // ============================================
-// 管理后台页面（双按钮独立保存，带调试日志）
+// 管理后台页面（双按钮独立保存，修复显示逻辑）
 // ============================================
 app.get('/admin', (req, res) => {
     if (req.session.loggedIn) {
@@ -1107,32 +1107,44 @@ app.get('/admin', (req, res) => {
         }).catch(()=>{});
     }
 
+    // ★ 修复 loadConfig：正确显示页面2配置 ★
     function loadConfig() {
-        fetch('/api/config').then(r=>r.json()).then(d=>{
-            console.log('[loadConfig] 后端返回数据:', d); // ★ 调试日志
-            document.getElementById('urlInput').value = d.url || '';
-            document.getElementById('fallbackUrlInput').value = d.fallbackUrl || '';
-            document.getElementById('urlInput2').value = d.url2 || '';
-            document.getElementById('fallbackUrlInput2').value = d.fallbackUrl2 || '';
-            document.getElementById('currentUrl').textContent = 
-                '页面1主链接：' + (d.url || '未设置') + ' | 备用：' + (d.fallbackUrl || '未设置') +
-                '  页面2主链接：' + (d.url2 || '未设置') + ' | 备用：' + (d.fallbackUrl2 || '未设置');
-            // 开关状态
-            ipQueryEnabled = d.ipQueryEnabled !== undefined ? d.ipQueryEnabled : true;
-            const toggle = document.getElementById('ipToggle');
-            const status = document.getElementById('toggleStatus');
-            if (ipQueryEnabled) {
-                toggle.classList.add('active');
-                status.textContent = '(已开启)';
-            } else {
-                toggle.classList.remove('active');
-                status.textContent = '(已关闭)';
-            }
-            updateVisitorVisibility();
-            loadStats();
-            loadVisitors('blocked');
-            loadVisitors('unblocked');
-        });
+        fetch('/api/config')
+            .then(r => r.json())
+            .then(d => {
+                console.log('[loadConfig] 后端返回数据:', d);
+                // 填充输入框
+                document.getElementById('urlInput').value = d.url || '';
+                document.getElementById('fallbackUrlInput').value = d.fallbackUrl || '';
+                document.getElementById('urlInput2').value = d.url2 || '';
+                document.getElementById('fallbackUrlInput2').value = d.fallbackUrl2 || '';
+                
+                // ★ 关键修复：单独判断 url2，若为空则显示“未设置” ★
+                const url2Display = (d.url2 && d.url2.trim() !== '') ? d.url2 : '未设置';
+                const fallbackUrl2Display = (d.fallbackUrl2 && d.fallbackUrl2.trim() !== '') ? d.fallbackUrl2 : '未设置';
+                document.getElementById('currentUrl').textContent = 
+                    '页面1主链接：' + (d.url || '未设置') + ' | 备用：' + (d.fallbackUrl || '未设置') +
+                    '  页面2主链接：' + url2Display + ' | 备用：' + fallbackUrl2Display;
+                
+                // 开关状态
+                ipQueryEnabled = d.ipQueryEnabled !== undefined ? d.ipQueryEnabled : true;
+                const toggle = document.getElementById('ipToggle');
+                const status = document.getElementById('toggleStatus');
+                if (ipQueryEnabled) {
+                    toggle.classList.add('active');
+                    status.textContent = '(已开启)';
+                } else {
+                    toggle.classList.remove('active');
+                    status.textContent = '(已关闭)';
+                }
+                updateVisitorVisibility();
+                loadStats();
+                loadVisitors('blocked');
+                loadVisitors('unblocked');
+            })
+            .catch(err => {
+                console.error('[loadConfig] 请求失败:', err);
+            });
     }
 
     function updateVisitorVisibility() {
@@ -1166,7 +1178,7 @@ app.get('/admin', (req, res) => {
             if (d.success) {
                 statusEl.textContent = '✅ 保存成功';
                 statusEl.className = 'status';
-                loadConfig(); // 刷新显示
+                loadConfig(); // 刷新显示（不刷新页面）
             } else {
                 statusEl.textContent = '❌ ' + d.message;
                 statusEl.className = 'status error';
@@ -1178,7 +1190,7 @@ app.get('/admin', (req, res) => {
         });
     }
 
-    // ★ 保存页面2配置 ★
+    // ★ 保存页面2配置：保存后强制刷新页面 ★
     function savePage2() {
         const url2 = document.getElementById('urlInput2').value.trim();
         const fallbackUrl2 = document.getElementById('fallbackUrlInput2').value.trim();
@@ -1195,9 +1207,12 @@ app.get('/admin', (req, res) => {
         .then(d => {
             console.log('[savePage2] 保存响应:', d);
             if (d.success) {
-                statusEl.textContent = '✅ 保存成功';
+                statusEl.textContent = '✅ 保存成功，页面即将刷新...';
                 statusEl.className = 'status';
-                loadConfig(); // 刷新显示
+                // 保存成功后强制刷新页面，让显示与后端同步
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
             } else {
                 statusEl.textContent = '❌ ' + d.message;
                 statusEl.className = 'status error';
